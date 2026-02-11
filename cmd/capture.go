@@ -31,8 +31,8 @@ This is pure transport — no interpretation of the content.`,
 			return fmt.Errorf("failed to capture pane %q: %w", target, err)
 		}
 
-		fmt.Fprint(os.Stdout, content)
-		return nil
+		_, err = fmt.Fprint(os.Stdout, content)
+		return err
 	},
 }
 
