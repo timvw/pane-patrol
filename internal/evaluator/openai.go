@@ -13,8 +13,9 @@ import (
 // OpenAIEvaluator evaluates pane content using an OpenAI-compatible Chat Completions API.
 // Works with OpenAI, Azure OpenAI, and any OpenAI-compatible endpoint.
 type OpenAIEvaluator struct {
-	client openai.Client
-	model  string
+	client    openai.Client
+	model     string
+	maxTokens int64
 }
 
 // OpenAIConfig holds configuration for the OpenAI evaluator.
@@ -25,6 +26,10 @@ type OpenAIConfig struct {
 	APIKey string
 	// Model is the model name (e.g., "gpt-4o-mini").
 	Model string
+	// MaxTokens is the maximum number of completion tokens.
+	// For reasoning models (gpt-5, gpt-5.1), this must be large enough
+	// to accommodate both reasoning tokens and output content.
+	MaxTokens int64
 	// ExtraHeaders are additional HTTP headers.
 	ExtraHeaders map[string]string
 }
@@ -45,9 +50,15 @@ func NewOpenAIEvaluator(cfg OpenAIConfig) *OpenAIEvaluator {
 
 	client := openai.NewClient(opts...)
 
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+
 	return &OpenAIEvaluator{
-		client: client,
-		model:  cfg.Model,
+		client:    client,
+		model:     cfg.Model,
+		maxTokens: maxTokens,
 	}
 }
 
@@ -71,7 +82,7 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.
 			openai.SystemMessage(SystemPrompt),
 			openai.UserMessage(userMessage),
 		},
-		MaxCompletionTokens: openai.Int(512),
+		MaxCompletionTokens: openai.Int(e.maxTokens),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai API call failed: %w", err)

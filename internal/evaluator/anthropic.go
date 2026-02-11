@@ -13,8 +13,9 @@ import (
 // AnthropicEvaluator evaluates pane content using the Anthropic Messages API.
 // Works with both direct Anthropic API and Azure AI Foundry.
 type AnthropicEvaluator struct {
-	client anthropic.Client
-	model  string
+	client    anthropic.Client
+	model     string
+	maxTokens int64
 }
 
 // AnthropicConfig holds configuration for the Anthropic evaluator.
@@ -25,6 +26,8 @@ type AnthropicConfig struct {
 	APIKey string
 	// Model is the model name (e.g., "claude-haiku-4-5").
 	Model string
+	// MaxTokens is the maximum number of output tokens.
+	MaxTokens int64
 	// ExtraHeaders are additional HTTP headers (e.g., "api-key" for Azure).
 	ExtraHeaders map[string]string
 }
@@ -45,9 +48,15 @@ func NewAnthropicEvaluator(cfg AnthropicConfig) *AnthropicEvaluator {
 
 	client := anthropic.NewClient(opts...)
 
+	maxTokens := cfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+
 	return &AnthropicEvaluator{
-		client: client,
-		model:  cfg.Model,
+		client:    client,
+		model:     cfg.Model,
+		maxTokens: maxTokens,
 	}
 }
 
@@ -67,7 +76,7 @@ func (e *AnthropicEvaluator) Evaluate(ctx context.Context, content string) (*mod
 
 	resp, err := e.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     anthropic.Model(e.model),
-		MaxTokens: 512,
+		MaxTokens: e.maxTokens,
 		System: []anthropic.TextBlockParam{
 			{Text: SystemPrompt},
 		},

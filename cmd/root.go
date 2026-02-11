@@ -11,12 +11,13 @@ import (
 
 var (
 	// Global flags.
-	flagMux      string
-	flagProvider string
-	flagModel    string
-	flagBaseURL  string
-	flagAPIKey   string
-	flagVerbose  bool
+	flagMux       string
+	flagProvider  string
+	flagModel     string
+	flagBaseURL   string
+	flagAPIKey    string
+	flagMaxTokens int64
+	flagVerbose   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -44,6 +45,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagModel, "model", envOrDefault("PANE_PATROL_MODEL", ""), "LLM model name (default: claude-sonnet-4-5 for anthropic, gpt-4o-mini for openai)")
 	rootCmd.PersistentFlags().StringVar(&flagBaseURL, "base-url", envOrDefault("PANE_PATROL_BASE_URL", ""), "override LLM API base URL")
 	rootCmd.PersistentFlags().StringVar(&flagAPIKey, "api-key", envOrDefault("PANE_PATROL_API_KEY", ""), "override LLM API key")
+	rootCmd.PersistentFlags().Int64Var(&flagMaxTokens, "max-tokens", 0, "max completion tokens (default: 4096; increase for reasoning models)")
 	rootCmd.PersistentFlags().BoolVar(&flagVerbose, "verbose", false, "include raw pane content in output")
 }
 
@@ -110,6 +112,7 @@ func newAnthropicEvaluator() (evaluator.Evaluator, error) {
 		BaseURL:      baseURL,
 		APIKey:       apiKey,
 		Model:        model,
+		MaxTokens:    flagMaxTokens,
 		ExtraHeaders: extraHeaders,
 	}), nil
 }
@@ -150,6 +153,7 @@ func newOpenAIEvaluator() (evaluator.Evaluator, error) {
 		BaseURL:      baseURL,
 		APIKey:       apiKey,
 		Model:        model,
+		MaxTokens:    flagMaxTokens,
 		ExtraHeaders: extraHeaders,
 	}), nil
 }
