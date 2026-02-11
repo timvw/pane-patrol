@@ -41,7 +41,7 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&flagMux, "mux", envOrDefault("PANE_PATROL_MUX", ""), "terminal multiplexer: tmux, zellij (default: auto-detect)")
 	rootCmd.PersistentFlags().StringVar(&flagProvider, "provider", envOrDefault("PANE_PATROL_PROVIDER", "anthropic"), "LLM provider: anthropic, openai")
-	rootCmd.PersistentFlags().StringVar(&flagModel, "model", envOrDefault("PANE_PATROL_MODEL", ""), "LLM model name (default: claude-haiku-4-5 for anthropic, gpt-4o-mini for openai)")
+	rootCmd.PersistentFlags().StringVar(&flagModel, "model", envOrDefault("PANE_PATROL_MODEL", ""), "LLM model name (default: claude-sonnet-4-5 for anthropic, gpt-4o-mini for openai)")
 	rootCmd.PersistentFlags().StringVar(&flagBaseURL, "base-url", envOrDefault("PANE_PATROL_BASE_URL", ""), "override LLM API base URL")
 	rootCmd.PersistentFlags().StringVar(&flagAPIKey, "api-key", envOrDefault("PANE_PATROL_API_KEY", ""), "override LLM API key")
 	rootCmd.PersistentFlags().BoolVar(&flagVerbose, "verbose", false, "include raw pane content in output")
@@ -71,7 +71,7 @@ func getEvaluator() (evaluator.Evaluator, error) {
 func newAnthropicEvaluator() (evaluator.Evaluator, error) {
 	model := flagModel
 	if model == "" {
-		model = "claude-haiku-4-5"
+		model = "claude-sonnet-4-5"
 	}
 
 	baseURL := flagBaseURL
@@ -82,7 +82,10 @@ func newAnthropicEvaluator() (evaluator.Evaluator, error) {
 	if baseURL == "" {
 		resourceName := os.Getenv("AZURE_RESOURCE_NAME")
 		if resourceName != "" {
-			baseURL = fmt.Sprintf("https://%s.services.ai.azure.com/anthropic/v1", resourceName)
+			// The Anthropic SDK appends /v1/messages to the base URL.
+			// Azure AI Foundry endpoint is: https://<resource>.services.ai.azure.com/anthropic/v1/messages
+			// So we set base URL to .../anthropic/ (SDK adds v1/messages).
+			baseURL = fmt.Sprintf("https://%s.services.ai.azure.com/anthropic/", resourceName)
 		}
 	}
 	if apiKey == "" {
@@ -90,16 +93,15 @@ func newAnthropicEvaluator() (evaluator.Evaluator, error) {
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey != "" && baseURL == "" {
-			baseURL = "https://api.anthropic.com/v1"
-		}
+		// Direct Anthropic API: SDK default base URL is https://api.anthropic.com/
+		// No need to override — just let the SDK use its default.
 	}
 
 	if apiKey == "" {
 		return nil, fmt.Errorf("no API key found. Set PANE_PATROL_API_KEY, AZURE_OPENAI_API_KEY, or ANTHROPIC_API_KEY")
 	}
 
-	// Azure AI Foundry uses "api-key" header for authentication.
+	// Azure AI Foundry needs both "api-key" (Azure) and "x-api-key" (Anthropic SDK default) headers.
 	if os.Getenv("AZURE_RESOURCE_NAME") != "" || isAzureEndpoint(baseURL) {
 		extraHeaders["api-key"] = apiKey
 	}

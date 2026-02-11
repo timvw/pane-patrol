@@ -86,7 +86,7 @@ func (e *AnthropicEvaluator) Evaluate(ctx context.Context, content string) (*mod
 	}
 
 	// Extract text from the first content block.
-	text := resp.Content[0].Text
+	text := stripMarkdownFences(resp.Content[0].Text)
 
 	var verdict model.LLMVerdict
 	if err := json.Unmarshal([]byte(text), &verdict); err != nil {

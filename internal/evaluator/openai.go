@@ -81,7 +81,7 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.
 		return nil, fmt.Errorf("openai API returned empty response")
 	}
 
-	text := resp.Choices[0].Message.Content
+	text := stripMarkdownFences(resp.Choices[0].Message.Content)
 
 	var verdict model.LLMVerdict
 	if err := json.Unmarshal([]byte(text), &verdict); err != nil {
