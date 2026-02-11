@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Run unit tests
+        run: go test -short -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: timvw/pane-patrol
+          files: ./coverage.out
+          fail_ci_if_error: false
+
+  build:
+    name: Build and Cross-Compile
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Build for all platforms
+        run: |
+          mkdir -p bin
+          go build -o bin/pane-patrol .
+          GOOS=linux GOARCH=amd64 go build -o bin/pane-patrol-linux-amd64 .
+          GOOS=linux GOARCH=arm64 go build -o bin/pane-patrol-linux-arm64 .
+          GOOS=darwin GOARCH=amd64 go build -o bin/pane-patrol-darwin-amd64 .
+          GOOS=darwin GOARCH=arm64 go build -o bin/pane-patrol-darwin-arm64 .
+
+      - name: Verify binaries
+        run: |
+          ./bin/pane-patrol version
+          ls -lh bin/
+          file bin/*

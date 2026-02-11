@@ -1,0 +1,129 @@
+package mux
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
+
+	"github.com/timvw/pane-patrol/internal/model"
+)
+
+// Tmux implements the Multiplexer interface for tmux.
+type Tmux struct{}
+
+// NewTmux creates a new tmux multiplexer.
+func NewTmux() *Tmux {
+	return &Tmux{}
+}
+
+// Name returns "tmux".
+func (t *Tmux) Name() string {
+	return "tmux"
+}
+
+// ListPanes returns all tmux panes, optionally filtered by session name pattern.
+func (t *Tmux) ListPanes(ctx context.Context, filter string) ([]model.Pane, error) {
+	// Format: session_name:window_index.pane_index\tcurrent_command
+	format := "#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_command}"
+	out, err := t.run(ctx, "list-panes", "-a", "-F", format)
+	if err != nil {
+		return nil, fmt.Errorf("tmux list-panes: %w", err)
+	}
+
+	var re *regexp.Regexp
+	if filter != "" {
+		re, err = regexp.Compile(filter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid filter pattern %q: %w", filter, err)
+		}
+	}
+
+	var panes []model.Pane
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		target := parts[0]
+		command := parts[1]
+
+		pane, err := parseTarget(target)
+		if err != nil {
+			continue
+		}
+		pane.Command = command
+
+		// Apply session name filter if provided.
+		if re != nil && !re.MatchString(pane.Session) {
+			continue
+		}
+
+		panes = append(panes, pane)
+	}
+
+	return panes, nil
+}
+
+// CapturePane captures the visible content of a tmux pane.
+// Uses -p (stdout) and -J (joined, unwraps lines).
+func (t *Tmux) CapturePane(ctx context.Context, target string) (string, error) {
+	out, err := t.run(ctx, "capture-pane", "-t", target, "-p", "-J")
+	if err != nil {
+		return "", fmt.Errorf("tmux capture-pane -t %s: %w", target, err)
+	}
+	return out, nil
+}
+
+// run executes a tmux command and returns its stdout.
+func (t *Tmux) run(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("%w: %s", err, string(exitErr.Stderr))
+		}
+		return "", err
+	}
+	return string(out), nil
+}
+
+// parseTarget parses a tmux target string "session:window.pane" into a Pane.
+func parseTarget(target string) (model.Pane, error) {
+	// Split "session:window.pane"
+	colonIdx := strings.LastIndex(target, ":")
+	if colonIdx < 0 {
+		return model.Pane{}, fmt.Errorf("invalid target %q: missing ':'", target)
+	}
+
+	session := target[:colonIdx]
+	rest := target[colonIdx+1:]
+
+	dotIdx := strings.LastIndex(rest, ".")
+	if dotIdx < 0 {
+		return model.Pane{}, fmt.Errorf("invalid target %q: missing '.'", target)
+	}
+
+	window, err := strconv.Atoi(rest[:dotIdx])
+	if err != nil {
+		return model.Pane{}, fmt.Errorf("invalid window index in %q: %w", target, err)
+	}
+
+	pane, err := strconv.Atoi(rest[dotIdx+1:])
+	if err != nil {
+		return model.Pane{}, fmt.Errorf("invalid pane index in %q: %w", target, err)
+	}
+
+	return model.Pane{
+		Target:  target,
+		Session: session,
+		Window:  window,
+		Pane:    pane,
+	}, nil
+}
