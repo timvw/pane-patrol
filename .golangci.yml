@@ -11,18 +11,16 @@ linters:
     - unused
     - gosimple
     - ineffassign
+  settings:
+    errcheck:
+      check-blank: false
+      check-type-assertions: false
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
 
 formatters:
   enable:
     - gofmt
-
-linters-settings:
-  errcheck:
-    check-blank: false
-    check-type-assertions: false
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
