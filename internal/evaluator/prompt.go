@@ -31,8 +31,6 @@ func stripMarkdownFences(text string) string {
 		}
 	}
 	// Strip trailing ```.
-	if strings.HasSuffix(text, "```") {
-		text = text[:len(text)-3]
-	}
+	text = strings.TrimSuffix(text, "```")
 	return strings.TrimSpace(text)
 }
