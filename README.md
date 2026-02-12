@@ -127,6 +127,12 @@ pane-patrol scan | jq '[.[] | select(.blocked == true)]'
 
 # Find blocked agents specifically
 pane-patrol scan | jq '[.[] | select(.blocked == true and .agent != "not_an_agent")]'
+
+# Compact table: target, agent, reason
+pane-patrol scan | jq -r '.[] | select(.blocked == true) | [.target, .agent, .reason] | @tsv'
+
+# Just the pane targets (useful for scripting)
+pane-patrol scan | jq -r '.[] | select(.blocked == true) | .target'
 ```
 
 ## Global flags
