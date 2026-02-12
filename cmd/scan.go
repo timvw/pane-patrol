@@ -75,6 +75,7 @@ The LLM decides everything — which panes are agents, which are blocked, and wh
 				sem <- struct{}{}
 				defer func() { <-sem }()
 
+				start := time.Now()
 				v, err := evaluatePane(ctx, m, eval, p)
 				if err != nil {
 					errCh <- fmt.Errorf("pane %s: %w", p.Target, err)
@@ -91,6 +92,7 @@ The LLM decides everything — which panes are agents, which are blocked, and wh
 						Model:       eval.Model(),
 						Provider:    eval.Provider(),
 						EvaluatedAt: time.Now().UTC(),
+						DurationMs:  time.Since(start).Milliseconds(),
 					}
 					return
 				}
@@ -114,6 +116,8 @@ The LLM decides everything — which panes are agents, which are blocked, and wh
 
 // evaluatePane captures and evaluates a single pane.
 func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluator, pane model.Pane) (*model.Verdict, error) {
+	start := time.Now()
+
 	content, err := m.CapturePane(ctx, pane.Target)
 	if err != nil {
 		return nil, fmt.Errorf("capture failed: %w", err)
@@ -137,6 +141,7 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 		Model:       eval.Model(),
 		Provider:    eval.Provider(),
 		EvaluatedAt: time.Now().UTC(),
+		DurationMs:  time.Since(start).Milliseconds(),
 	}
 
 	if flagVerbose {
@@ -148,6 +153,6 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 
 func init() {
 	scanCmd.Flags().StringVar(&flagScanFilter, "filter", "", "regex pattern to filter by session name")
-	scanCmd.Flags().IntVar(&flagScanParallel, "parallel", 1, "number of panes to evaluate concurrently")
+	scanCmd.Flags().IntVar(&flagScanParallel, "parallel", 10, "number of panes to evaluate concurrently")
 	rootCmd.AddCommand(scanCmd)
 }

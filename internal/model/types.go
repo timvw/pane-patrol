@@ -48,6 +48,8 @@ type Verdict struct {
 	Provider string `json:"provider"`
 	// EvaluatedAt is the timestamp when the evaluation was performed.
 	EvaluatedAt time.Time `json:"evaluated_at"`
+	// DurationMs is the wall-clock time in milliseconds for capture + evaluation.
+	DurationMs int64 `json:"duration_ms"`
 }
 
 // LLMVerdict is the JSON structure returned by the LLM.
