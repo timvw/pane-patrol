@@ -34,6 +34,8 @@ The LLM makes ALL judgment calls (agent detection, blocked state, reason).`,
 			return err
 		}
 
+		start := time.Now()
+
 		// Capture pane content (transport).
 		content, err := m.CapturePane(cmd.Context(), target)
 		if err != nil {
@@ -77,6 +79,7 @@ The LLM makes ALL judgment calls (agent detection, blocked state, reason).`,
 			Model:       eval.Model(),
 			Provider:    eval.Provider(),
 			EvaluatedAt: time.Now().UTC(),
+			DurationMs:  time.Since(start).Milliseconds(),
 		}
 
 		if flagVerbose {

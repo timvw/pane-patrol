@@ -109,10 +109,10 @@ Output:
 ### Scan all panes
 
 ```bash
-# Scan all panes sequentially
+# Scan all panes (parallel by default, max 10 concurrent)
 pane-patrol scan
 
-# Scan with filter and parallelism
+# Scan with filter and custom parallelism
 pane-patrol scan --filter "^wt-" --parallel 4
 
 # Include raw pane content in output
