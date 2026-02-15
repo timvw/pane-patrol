@@ -29,3 +29,6 @@ go.work.sum
 Thumbs.db
 .pane-patrol.yaml
 *.env
+
+# Demo output (generated, large files)
+demo/output/

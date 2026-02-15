@@ -11,6 +11,8 @@ confirmation dialogs, permission prompts, questions, or interactive selections.
 Following [ZFC (Zero False Commands)](docs/design-principles.md) principles,
 **all judgment calls are made by the LLM**. Go code only provides transport.
 
+![Supervisor TUI — blocked agents with suggested actions](docs/images/supervisor-blocked.png)
+
 ## Installation
 
 ### Homebrew (macOS / Linux)
@@ -66,6 +68,10 @@ Press `f` to cycle through three views:
 - **all** — everything including non-agent panes
 
 The summary line shows `visible/total panes` so you can see how much is filtered.
+
+| blocked | agents | all |
+|---------|--------|-----|
+| ![blocked](docs/images/supervisor-blocked.png) | ![agents](docs/images/supervisor-agents.png) | ![all](docs/images/supervisor-all.png) |
 
 ### Auto-nudge
 
@@ -165,6 +171,8 @@ Output includes agent classification, blocked status, reason, LLM-suggested
 actions with risk levels, and token usage.
 
 ### Scan all panes
+
+![Scan output — JSON with agent classifications](docs/images/scan-output.png)
 
 ```bash
 # Scan all panes (parallel by default, max 10 concurrent)
