@@ -93,67 +93,20 @@ async def demo_scan(session, output_dir: str):
     )
     sid = shell["shell_session_id"]
 
-    # Start recording (low fps to keep GIF rendering fast)
-    await call_tool(session, "shell_record_start", {"session_id": sid, "fps": 4})
-
-    # Clear and launch supervisor — use large delay_ms to wait for LLM scan
+    # Sanitize prompt to avoid leaking hostname/username in screenshots
     await call_tool(
         session,
         "shell_send",
-        {
-            "session_id": sid,
-            "input": "clear && ./bin/pane-patrol supervisor\r",
-            "delay_ms": 15000,
-        },
+        {"session_id": sid, "input": "export PS1='$ '\r", "delay_ms": 500},
     )
 
-    # Screenshot: default view (blocked filter)
-    data = await call_tool(
-        session,
-        "shell_screenshot",
-        {"session_id": sid, "name": "supervisor-blocked"},
-    )
-    await download(data, output_dir)
-
-    # f -> agents view
-    await call_tool(
-        session, "shell_send", {"session_id": sid, "input": "f", "delay_ms": 1500}
-    )
-    data = await call_tool(
-        session, "shell_screenshot", {"session_id": sid, "name": "supervisor-agents"}
-    )
-    await download(data, output_dir)
-
-    # f -> all view
-    await call_tool(
-        session, "shell_send", {"session_id": sid, "input": "f", "delay_ms": 1500}
-    )
-    data = await call_tool(
-        session, "shell_screenshot", {"session_id": sid, "name": "supervisor-all"}
-    )
-    await download(data, output_dir)
-
-    # f -> back to blocked, then 'l' to focus action panel
-    await call_tool(
-        session, "shell_send", {"session_id": sid, "input": "f", "delay_ms": 1000}
-    )
-    await call_tool(
-        session, "shell_send", {"session_id": sid, "input": "l", "delay_ms": 1500}
-    )
-    data = await call_tool(
-        session, "shell_screenshot", {"session_id": sid, "name": "supervisor-actions"}
-    )
-    await download(data, output_dir)
-
-    # Quit
-    await call_tool(
-        session, "shell_send", {"session_id": sid, "input": "q", "delay_ms": 500}
-    )
+    # Start recording (low fps to keep GIF rendering fast)
+    await call_tool(session, "shell_record_start", {"session_id": sid, "fps": 4})
 
     # Run pane-patrol scan with jq formatting
     # exclude_sessions in .pane-patrol.yaml handles AIGGTM filtering
     scan_cmd = (
-        "./bin/pane-patrol scan 2>/dev/null"
+        "clear && ./bin/pane-patrol scan 2>/dev/null"
         " | jq '[ .[] | {target, agent, blocked, reason} ]'"
     )
     await call_tool(
