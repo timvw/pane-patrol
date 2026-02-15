@@ -21,6 +21,40 @@ Following [ZFC (Zero False Commands)](docs/design-principles.md) principles,
 brew install timvw/tap/pane-patrol
 ```
 
+### Debian / Ubuntu
+
+```bash
+# amd64
+curl -LO https://github.com/timvw/pane-patrol/releases/latest/download/pane-patrol_0.2.0_linux_amd64.deb
+sudo dpkg -i pane-patrol_0.2.0_linux_amd64.deb
+
+# arm64
+curl -LO https://github.com/timvw/pane-patrol/releases/latest/download/pane-patrol_0.2.0_linux_arm64.deb
+sudo dpkg -i pane-patrol_0.2.0_linux_arm64.deb
+```
+
+### RPM (Fedora / RHEL)
+
+```bash
+sudo rpm -i https://github.com/timvw/pane-patrol/releases/latest/download/pane-patrol_0.2.0_linux_amd64.rpm
+```
+
+### Arch Linux
+
+```bash
+curl -LO https://github.com/timvw/pane-patrol/releases/latest/download/pane-patrol_0.2.0_linux_amd64.pkg.tar.zst
+sudo pacman -U pane-patrol_0.2.0_linux_amd64.pkg.tar.zst
+```
+
+### Binary (any Linux / macOS)
+
+```bash
+# Download the tarball for your platform (linux_amd64, linux_arm64, darwin_amd64, darwin_arm64)
+curl -LO https://github.com/timvw/pane-patrol/releases/latest/download/pane-patrol_0.2.0_linux_amd64.tar.gz
+tar xzf pane-patrol_0.2.0_linux_amd64.tar.gz
+sudo mv pane-patrol /usr/local/bin/
+```
+
 ### Go install
 
 ```bash
