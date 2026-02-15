@@ -1,4 +1,4 @@
-// Package config loads pane-supervisor configuration from file and environment.
+// Package config loads pane-patrol configuration from file and environment.
 //
 // Precedence (highest to lowest):
 //  1. Environment variables (PANE_PATROL_*)
@@ -6,8 +6,8 @@
 //  3. Built-in defaults
 //
 // Config file search order:
-//  1. .pane-supervisor.yaml in current directory
-//  2. ~/.config/pane-supervisor/config.yaml
+//  1. .pane-patrol.yaml in current directory
+//  2. ~/.config/pane-patrol/config.yaml
 package config
 
 import (
@@ -99,13 +99,13 @@ func Load() (*Config, error) {
 // findConfigFile searches for a config file and returns its path and contents.
 func findConfigFile() (string, []byte, error) {
 	// 1. Current directory
-	if data, err := os.ReadFile(".pane-supervisor.yaml"); err == nil {
-		return ".pane-supervisor.yaml", data, nil
+	if data, err := os.ReadFile(".pane-patrol.yaml"); err == nil {
+		return ".pane-patrol.yaml", data, nil
 	}
 
 	// 2. XDG config dir / ~/.config
 	if home, err := os.UserHomeDir(); err == nil {
-		path := filepath.Join(home, ".config", "pane-supervisor", "config.yaml")
+		path := filepath.Join(home, ".config", "pane-patrol", "config.yaml")
 		if data, err := os.ReadFile(path); err == nil {
 			return path, data, nil
 		}
