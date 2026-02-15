@@ -40,6 +40,8 @@ func NewVerdictCache(ttl time.Duration) *VerdictCache {
 
 // Lookup checks if we have a valid cached verdict for the given target and content.
 // Returns the cached verdict and true if found and valid, nil and false otherwise.
+// The entire check (find + validate + copy) is performed under lock to prevent
+// a concurrent Invalidate or Store from racing with the validation.
 func (c *VerdictCache) Lookup(target, content string) (*model.Verdict, bool) {
 	if c.ttl <= 0 {
 		return nil, false
@@ -47,10 +49,10 @@ func (c *VerdictCache) Lookup(target, content string) (*model.Verdict, bool) {
 
 	hash := hashContent(content)
 
-	c.mu.RLock()
-	entry, ok := c.entries[target]
-	c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
+	entry, ok := c.entries[target]
 	if !ok {
 		return nil, false
 	}
@@ -60,16 +62,14 @@ func (c *VerdictCache) Lookup(target, content string) (*model.Verdict, bool) {
 		return nil, false
 	}
 
-	// TTL expired — cache miss (forces re-evaluation of stale content)
+	// TTL expired — delete stale entry and return miss
 	if time.Since(entry.cachedAt) > c.ttl {
+		delete(c.entries, target)
 		return nil, false
 	}
 
-	// Cache hit — increment counter and return
-	c.mu.Lock()
+	// Cache hit — increment counter and return a copy
 	entry.hitCount++
-	c.mu.Unlock()
-
 	v := entry.verdict
 	return &v, true
 }

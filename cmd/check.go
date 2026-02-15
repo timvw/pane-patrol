@@ -36,19 +36,7 @@ The LLM makes ALL judgment calls (agent detection, blocked state, reason).`,
 
 		start := time.Now()
 
-		// Capture pane content (transport).
-		content, err := m.CapturePane(cmd.Context(), target)
-		if err != nil {
-			return fmt.Errorf("failed to capture pane %q: %w", target, err)
-		}
-
-		// Send to LLM for evaluation (judgment).
-		llmVerdict, err := eval.Evaluate(cmd.Context(), content)
-		if err != nil {
-			return fmt.Errorf("evaluation failed for %q: %w", target, err)
-		}
-
-		// Parse target components for the output.
+		// Look up pane metadata (PID, process tree) for the target.
 		panes, err := m.ListPanes(cmd.Context(), "")
 		if err != nil {
 			return fmt.Errorf("failed to list panes: %w", err)
@@ -63,6 +51,22 @@ The LLM makes ALL judgment calls (agent detection, blocked state, reason).`,
 		}
 		if pane.Target == "" {
 			pane.Target = target
+		}
+
+		// Capture pane content (transport).
+		capture, err := m.CapturePane(cmd.Context(), target)
+		if err != nil {
+			return fmt.Errorf("failed to capture pane %q: %w", target, err)
+		}
+
+		// Prepend process metadata for better LLM classification,
+		// matching the behavior of scan and supervisor commands.
+		content := model.BuildProcessHeader(pane) + capture
+
+		// Send to LLM for evaluation (judgment).
+		llmVerdict, err := eval.Evaluate(cmd.Context(), content)
+		if err != nil {
+			return fmt.Errorf("evaluation failed for %q: %w", target, err)
 		}
 
 		// Assemble verdict (transport — no interpretation).

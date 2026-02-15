@@ -64,7 +64,7 @@ func Defaults() *Config {
 		MaxTokens: 4096,
 		Parallel:  10,
 		Refresh:   "30s",
-		CacheTTL:  "0",
+		CacheTTL:  "2m",
 	}
 }
 

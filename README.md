@@ -142,13 +142,19 @@ Example `.pane-patrol.yaml`:
 provider: openai
 model: gpt-4o-mini
 
-# Sessions to exclude from scanning entirely (saves LLM tokens)
+# Sessions to exclude from scanning entirely (saves LLM tokens).
+# Supports exact match and prefix globs with trailing * (e.g. "AIGGTM-*").
 exclude_sessions:
   - langfuse
   - tmux-resume
+  - "AIGGTM-*"    # prefix glob: matches AIGGTM-1234, AIGGTM-foo, etc.
 
 # Auto-refresh interval (set to "0" or "off" to disable)
 refresh: 30s
+
+# Verdict cache TTL — reuse LLM results when pane content hasn't changed.
+# Set to "0" or "off" to disable caching. Default: 2m.
+cache_ttl: 2m
 
 # Auto-nudge settings
 auto_nudge: false
@@ -168,7 +174,7 @@ otel_headers: "Authorization=Basic <base64-encoded-credentials>"
 | `PANE_PATROL_BASE_URL` | Override LLM API endpoint |
 | `PANE_PATROL_API_KEY` | Override LLM API key |
 | `PANE_PATROL_FILTER` | Regex filter on session names (include) |
-| `PANE_PATROL_EXCLUDE_SESSIONS` | Comma-separated session names to exclude |
+| `PANE_PATROL_EXCLUDE_SESSIONS` | Comma-separated session names/globs to exclude (e.g. `AIGGTM-*,private`) |
 | `PANE_PATROL_REFRESH` | Auto-refresh interval (e.g. `30s`, `0` to disable) |
 | `PANE_PATROL_CACHE_TTL` | Verdict cache TTL (e.g. `5m`, `0` to disable) |
 | `PANE_PATROL_AUTO_NUDGE` | Enable auto-nudge (`true` or `1`) |
@@ -202,7 +208,8 @@ pane-patrol check mysession:0.0
 ```
 
 Output includes agent classification, blocked status, reason, LLM-suggested
-actions with risk levels, and token usage.
+actions with risk levels, and token usage. Process metadata (PID, child
+processes) is included in the LLM evaluation, matching `scan` and `supervisor`.
 
 ### Scan all panes
 

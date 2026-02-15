@@ -104,8 +104,7 @@ func runSupervisor(cmd *cobra.Command) error {
 		Parallel:        cfg.Parallel,
 		SessionID:       sessionID,
 		SelfTarget:      selfTarget,
-		// Cache disabled for now to ensure fresh LLM evaluations each scan
-		// Cache: supervisor.NewVerdictCache(cfg.CacheTTLDuration),
+		Cache:           supervisor.NewVerdictCache(cfg.CacheTTLDuration),
 	}
 
 	tui := &supervisor.TUI{
