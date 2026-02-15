@@ -37,6 +37,32 @@ const (
 	modeTextInput
 )
 
+// displayFilter controls which panes are visible in the TUI.
+type displayFilter int
+
+const (
+	filterBlocked displayFilter = iota // only blocked agents
+	filterAgents                       // all agent panes (blocked + active)
+	filterAll                          // everything including non-agents
+)
+
+func (f displayFilter) String() string {
+	switch f {
+	case filterBlocked:
+		return "blocked"
+	case filterAgents:
+		return "agents"
+	case filterAll:
+		return "all"
+	default:
+		return "?"
+	}
+}
+
+func (f displayFilter) next() displayFilter {
+	return (f + 1) % 3
+}
+
 // focusPanel tracks which panel has keyboard focus.
 type focusPanel int
 
@@ -93,6 +119,9 @@ type tuiModel struct {
 	cursor          int
 	mode            viewMode
 	focus           focusPanel
+
+	// display filter
+	filter displayFilter
 
 	// grouped list
 	groups   []sessionGroup
@@ -179,15 +208,28 @@ func (m *tuiModel) doScan() tea.Cmd {
 }
 
 // rebuildGroups groups verdicts by session and rebuilds the visible items list.
-// Non-agent panes (agent == "not_an_agent") are excluded — we only supervise
-// AI coding agents.
+// The display filter controls which panes are included:
+//   - filterBlocked: only agent panes that are blocked
+//   - filterAgents: all agent panes (blocked + active), excluding non-agents
+//   - filterAll: everything including non-agent panes
 func (m *tuiModel) rebuildGroups() {
-	// Group verdicts by session, preserving order of first appearance.
-	// All panes are shown — non-agents and active panes are dimmed
-	// but visible, so LLM misclassifications don't silently hide sessions.
 	seen := map[string]int{} // session -> index in groups
 	m.groups = nil
 	for i, v := range m.verdicts {
+		// Apply display filter
+		switch m.filter {
+		case filterBlocked:
+			if !v.Blocked || v.Agent == "not_an_agent" || v.Agent == "error" {
+				continue
+			}
+		case filterAgents:
+			if v.Agent == "not_an_agent" {
+				continue
+			}
+		case filterAll:
+			// show everything
+		}
+
 		idx, ok := seen[v.Session]
 		if !ok {
 			idx = len(m.groups)
@@ -594,6 +636,19 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "f":
+		// Cycle display filter: blocked -> agents -> all -> blocked
+		m.filter = m.filter.next()
+		m.message = fmt.Sprintf("Filter: %s", m.filter)
+		m.rebuildGroups()
+		m.cursor = 0
+		// Ensure cursor lands on a pane, not a session header
+		for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
+			m.cursor++
+		}
+		m.clampActionCursor()
+		return m, nil
+
 	case "r":
 		// Rescan
 		m.scanning = true
@@ -730,7 +785,8 @@ func (m *tuiModel) viewVerdictList() string {
 		if m.autoNudge {
 			autoLabel = fmt.Sprintf("a=auto:ON(%s)", m.autoNudgeMaxRisk)
 		}
-		b.WriteString(dimStyle.Render(fmt.Sprintf("Enter/click=jump  →/Tab=actions  1-9=action  t=type  %s  r=rescan  q=quit", autoLabel)))
+		filterLabel := fmt.Sprintf("f=%s", m.filter)
+		b.WriteString(dimStyle.Render(fmt.Sprintf("Enter/click=jump  →/Tab=actions  1-9=action  t=type  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
 	}
 	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
 		b.WriteString("  ")
@@ -868,8 +924,12 @@ func (m *tuiModel) viewVerdictList() string {
 	}
 
 	// Summary line
-	summary := fmt.Sprintf("  %d blocked | %d active | %d sessions | %d panes | scan #%d",
-		totalBlocked, totalActive, len(m.groups), len(m.verdicts), m.scanCount)
+	visiblePanes := 0
+	for _, g := range m.groups {
+		visiblePanes += len(g.verdicts)
+	}
+	summary := fmt.Sprintf("  %d blocked | %d active | %d/%d panes | scan #%d",
+		totalBlocked, totalActive, visiblePanes, len(m.verdicts), m.scanCount)
 	if start > 0 || end < len(m.items) {
 		summary += fmt.Sprintf(" | showing %d-%d", start+1, end)
 	}
