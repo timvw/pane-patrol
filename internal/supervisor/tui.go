@@ -355,6 +355,10 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor >= len(m.items) {
 				m.cursor = 0
 			}
+			// Ensure cursor lands on a pane, not a session header
+			for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
+				m.cursor++
+			}
 			m.clampActionCursor()
 		}
 		// Schedule next auto-refresh
@@ -470,7 +474,10 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if len(m.items) > 0 && m.cursor > 0 {
 			m.cursor--
-			// Reset action cursor when changing pane selection
+			// Skip session headers — only panes are actionable
+			for m.cursor > 0 && m.items[m.cursor].kind == itemSession {
+				m.cursor--
+			}
 			m.actionCursor = 0
 			m.clampActionCursor()
 		}
@@ -478,6 +485,10 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		if len(m.items) > 0 && m.cursor < len(m.items)-1 {
 			m.cursor++
+			// Skip session headers — only panes are actionable
+			for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
+				m.cursor++
+			}
 			m.actionCursor = 0
 			m.clampActionCursor()
 		}
