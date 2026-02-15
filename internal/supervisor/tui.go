@@ -183,14 +183,11 @@ func (m *tuiModel) doScan() tea.Cmd {
 // AI coding agents.
 func (m *tuiModel) rebuildGroups() {
 	// Group verdicts by session, preserving order of first appearance.
-	// Skip non-agent panes and non-blocked panes — we only show panes
-	// that need human attention.
+	// All panes are shown — non-agents and active panes are dimmed
+	// but visible, so LLM misclassifications don't silently hide sessions.
 	seen := map[string]int{} // session -> index in groups
 	m.groups = nil
 	for i, v := range m.verdicts {
-		if v.Agent == "not_an_agent" || v.Agent == "error" || !v.Blocked {
-			continue
-		}
 		idx, ok := seen[v.Session]
 		if !ok {
 			idx = len(m.groups)
@@ -201,7 +198,7 @@ func (m *tuiModel) rebuildGroups() {
 		if v.Blocked {
 			m.groups[idx].blocked++
 		}
-		if v.Agent != "error" && !v.Blocked {
+		if v.Agent != "error" && v.Agent != "not_an_agent" && !v.Blocked {
 			m.groups[idx].active++
 		}
 	}
