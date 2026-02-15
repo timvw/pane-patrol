@@ -12,8 +12,12 @@ type Pane struct {
 	Window int `json:"window"`
 	// Pane is the pane index.
 	Pane int `json:"pane"`
+	// PID is the pane's shell process ID.
+	PID int `json:"pid"`
 	// Command is the current command running in the pane (e.g., "node", "bash").
 	Command string `json:"command"`
+	// ProcessTree is the list of child processes (command lines) running in the pane.
+	ProcessTree []string `json:"process_tree,omitempty"`
 }
 
 // Verdict is the result of an LLM evaluation of a pane's content.

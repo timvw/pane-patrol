@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -164,9 +165,31 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 
 	start := time.Now()
 
-	content, err := s.Mux.CapturePane(ctx, pane.Target)
+	capture, err := s.Mux.CapturePane(ctx, pane.Target)
 	if err != nil {
 		return nil, fmt.Errorf("capture failed: %w", err)
+	}
+
+	// Prepend process metadata to give the LLM stronger signals.
+	// This is pure transport — we're passing observable process info,
+	// not interpreting it (ZFC compliant).
+	content := capture
+	if pane.PID > 0 || len(pane.ProcessTree) > 0 {
+		var meta strings.Builder
+		meta.WriteString("[Process Info]\n")
+		meta.WriteString(fmt.Sprintf("Session: %s\n", pane.Session))
+		meta.WriteString(fmt.Sprintf("Shell PID: %d\n", pane.PID))
+		meta.WriteString(fmt.Sprintf("Shell command: %s\n", pane.Command))
+		if len(pane.ProcessTree) > 0 {
+			meta.WriteString("Child processes:\n")
+			for _, proc := range pane.ProcessTree {
+				meta.WriteString(fmt.Sprintf("  %s\n", proc))
+			}
+		} else {
+			meta.WriteString("Child processes: (none)\n")
+		}
+		meta.WriteString("\n[Terminal Content]\n")
+		content = meta.String() + capture
 	}
 
 	// Set the pane content as the observation input for Langfuse

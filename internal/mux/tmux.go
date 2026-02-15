@@ -26,8 +26,8 @@ func (t *Tmux) Name() string {
 
 // ListPanes returns all tmux panes, optionally filtered by session name pattern.
 func (t *Tmux) ListPanes(ctx context.Context, filter string) ([]model.Pane, error) {
-	// Format: session_name:window_index.pane_index\tcurrent_command
-	format := "#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_command}"
+	// Format: session_name:window_index.pane_index\tpane_pid\tcurrent_command
+	format := "#{session_name}:#{window_index}.#{pane_index}\t#{pane_pid}\t#{pane_current_command}"
 	out, err := t.run(ctx, "list-panes", "-a", "-F", format)
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-panes: %w", err)
@@ -46,19 +46,22 @@ func (t *Tmux) ListPanes(ctx context.Context, filter string) ([]model.Pane, erro
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
 			continue
 		}
 
 		target := parts[0]
-		command := parts[1]
+		pid, _ := strconv.Atoi(parts[1])
+		command := parts[2]
 
 		pane, err := parseTarget(target)
 		if err != nil {
 			continue
 		}
+		pane.PID = pid
 		pane.Command = command
+		pane.ProcessTree = getProcessTree(pid)
 
 		// Apply session name filter if provided.
 		if re != nil && !re.MatchString(pane.Session) {
@@ -92,6 +95,40 @@ func (t *Tmux) run(ctx context.Context, args ...string) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// getProcessTree returns the command lines of all child processes of the given PID.
+// This walks one level deep (direct children of the pane's shell process).
+// Returns nil on any error — process info is best-effort, never fatal.
+func getProcessTree(pid int) []string {
+	if pid <= 0 {
+		return nil
+	}
+	// pgrep -P finds direct children of the given PID
+	cmd := exec.Command("pgrep", "-P", strconv.Itoa(pid))
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	var tree []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		childPID := strings.TrimSpace(line)
+		if childPID == "" {
+			continue
+		}
+		// Get the full command line of each child process
+		ps := exec.Command("ps", "-o", "args=", "-p", childPID)
+		psOut, err := ps.Output()
+		if err != nil {
+			continue
+		}
+		args := strings.TrimSpace(string(psOut))
+		if args != "" {
+			tree = append(tree, args)
+		}
+	}
+	return tree
 }
 
 // parseTarget parses a tmux target string "session:window.pane" into a Pane.

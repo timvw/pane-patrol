@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,14 +115,38 @@ The LLM decides everything — which panes are agents, which are blocked, and wh
 	},
 }
 
+// buildProcessHeader returns a process metadata header for the LLM.
+func buildProcessHeader(pane model.Pane) string {
+	if pane.PID <= 0 && len(pane.ProcessTree) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[Process Info]\n")
+	b.WriteString(fmt.Sprintf("Session: %s\n", pane.Session))
+	b.WriteString(fmt.Sprintf("Shell PID: %d\n", pane.PID))
+	b.WriteString(fmt.Sprintf("Shell command: %s\n", pane.Command))
+	if len(pane.ProcessTree) > 0 {
+		b.WriteString("Child processes:\n")
+		for _, proc := range pane.ProcessTree {
+			b.WriteString(fmt.Sprintf("  %s\n", proc))
+		}
+	} else {
+		b.WriteString("Child processes: (none)\n")
+	}
+	b.WriteString("\n[Terminal Content]\n")
+	return b.String()
+}
+
 // evaluatePane captures and evaluates a single pane.
 func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluator, pane model.Pane) (*model.Verdict, error) {
 	start := time.Now()
 
-	content, err := m.CapturePane(ctx, pane.Target)
+	capture, err := m.CapturePane(ctx, pane.Target)
 	if err != nil {
 		return nil, fmt.Errorf("capture failed: %w", err)
 	}
+
+	content := buildProcessHeader(pane) + capture
 
 	llmVerdict, err := eval.Evaluate(ctx, content)
 	if err != nil {
