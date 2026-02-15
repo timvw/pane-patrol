@@ -95,12 +95,13 @@ func runSupervisor() error {
 	selfTarget := resolveSelfTarget()
 
 	scanner := &supervisor.Scanner{
-		Mux:        m,
-		Evaluator:  eval,
-		Filter:     cfg.Filter,
-		Parallel:   cfg.Parallel,
-		SessionID:  sessionID,
-		SelfTarget: selfTarget,
+		Mux:             m,
+		Evaluator:       eval,
+		Filter:          cfg.Filter,
+		ExcludeSessions: cfg.ExcludeSessions,
+		Parallel:        cfg.Parallel,
+		SessionID:       sessionID,
+		SelfTarget:      selfTarget,
 		// Cache disabled for now to ensure fresh LLM evaluations each scan
 		// Cache: supervisor.NewVerdictCache(cfg.CacheTTLDuration),
 	}

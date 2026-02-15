@@ -23,14 +23,15 @@ var tracer = otel.Tracer("pane-supervisor")
 
 // Scanner wraps the pane-patrol scan functionality for use by the supervisor.
 type Scanner struct {
-	Mux        mux.Multiplexer
-	Evaluator  evaluator.Evaluator
-	Filter     string
-	Parallel   int
-	Verbose    bool
-	Cache      *VerdictCache
-	SessionID  string // Langfuse session ID — groups all scans from one supervisor run
-	SelfTarget string // pane target of this supervisor process (skipped during scan)
+	Mux             mux.Multiplexer
+	Evaluator       evaluator.Evaluator
+	Filter          string
+	ExcludeSessions []string // Session names to exclude from scanning (exact match)
+	Parallel        int
+	Verbose         bool
+	Cache           *VerdictCache
+	SessionID       string // Langfuse session ID — groups all scans from one supervisor run
+	SelfTarget      string // pane target of this supervisor process (skipped during scan)
 }
 
 // ScanResult contains the verdicts and metadata from a scan.
@@ -63,6 +64,21 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 		filtered := panes[:0]
 		for _, p := range panes {
 			if p.Target != s.SelfTarget {
+				filtered = append(filtered, p)
+			}
+		}
+		panes = filtered
+	}
+
+	// Exclude sessions by name (user-specified, exact match)
+	if len(s.ExcludeSessions) > 0 {
+		excluded := make(map[string]bool, len(s.ExcludeSessions))
+		for _, name := range s.ExcludeSessions {
+			excluded[name] = true
+		}
+		filtered := panes[:0]
+		for _, p := range panes {
+			if !excluded[p.Session] {
 				filtered = append(filtered, p)
 			}
 		}

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -35,6 +36,9 @@ type Config struct {
 	// Refresh and cache
 	Refresh  string `yaml:"refresh"`   // Go duration string, e.g. "30s"
 	CacheTTL string `yaml:"cache_ttl"` // Go duration string, e.g. "5m"
+
+	// Session filtering
+	ExcludeSessions []string `yaml:"exclude_sessions"` // Session names to exclude from scanning (exact match)
 
 	// Auto-nudge
 	AutoNudge        bool   `yaml:"auto_nudge"`          // Enable automatic nudging of blocked panes
@@ -143,6 +147,9 @@ func mergeFile(cfg *Config, file *Config) {
 	if file.CacheTTL != "" {
 		cfg.CacheTTL = file.CacheTTL
 	}
+	if len(file.ExcludeSessions) > 0 {
+		cfg.ExcludeSessions = file.ExcludeSessions
+	}
 	if file.AutoNudge {
 		cfg.AutoNudge = file.AutoNudge
 	}
@@ -179,6 +186,9 @@ func mergeEnv(cfg *Config) {
 	}
 	if v := os.Getenv("PANE_PATROL_CACHE_TTL"); v != "" {
 		cfg.CacheTTL = v
+	}
+	if v := os.Getenv("PANE_PATROL_EXCLUDE_SESSIONS"); v != "" {
+		cfg.ExcludeSessions = strings.Split(v, ",")
 	}
 	if v := os.Getenv("PANE_PATROL_AUTO_NUDGE"); v == "true" || v == "1" {
 		cfg.AutoNudge = true
