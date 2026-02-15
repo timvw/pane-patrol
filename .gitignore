@@ -27,3 +27,5 @@ go.work.sum
 # OS
 .DS_Store
 Thumbs.db
+.pane-supervisor.yaml
+*.env

@@ -39,6 +39,16 @@ type Verdict struct {
 	// Reasoning is the LLM's detailed step-by-step analysis.
 	Reasoning string `json:"reasoning"`
 
+	// Actions is a list of possible actions to unblock the pane.
+	// Determined by the LLM, not by Go code (ZFC compliance).
+	// Only populated when the pane is blocked.
+	Actions []Action `json:"actions,omitempty"`
+	// Recommended is the index into Actions that the LLM recommends.
+	Recommended int `json:"recommended,omitempty"`
+
+	// Usage tracks token consumption for this evaluation.
+	Usage TokenUsage `json:"usage,omitempty"`
+
 	// Content is the raw pane capture. Only populated when verbose mode is enabled.
 	Content string `json:"content,omitempty"`
 
@@ -52,11 +62,33 @@ type Verdict struct {
 	DurationMs int64 `json:"duration_ms"`
 }
 
+// Action represents a possible action to unblock a pane.
+// Determined by the LLM, not by Go code (ZFC compliance).
+type Action struct {
+	// Keys is the tmux send-keys input (e.g., "y", "C-c", "Enter").
+	Keys string `json:"keys"`
+	// Label is a human-readable description of what this action does.
+	Label string `json:"label"`
+	// Risk is the risk level: "low", "medium", "high".
+	Risk string `json:"risk"`
+}
+
+// TokenUsage tracks LLM token consumption for a single evaluation.
+type TokenUsage struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+}
+
 // LLMVerdict is the JSON structure returned by the LLM.
 // This is parsed from the LLM's response text.
 type LLMVerdict struct {
-	Agent     string `json:"agent"`
-	Blocked   bool   `json:"blocked"`
-	Reason    string `json:"reason"`
-	Reasoning string `json:"reasoning"`
+	Agent       string   `json:"agent"`
+	Blocked     bool     `json:"blocked"`
+	Reason      string   `json:"reason"`
+	Actions     []Action `json:"actions,omitempty"`
+	Recommended int      `json:"recommended,omitempty"`
+	Reasoning   string   `json:"reasoning"`
+
+	// Usage is populated by the evaluator, not parsed from the LLM response.
+	Usage TokenUsage `json:"-"`
 }

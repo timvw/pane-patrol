@@ -8,6 +8,8 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/timvw/pane-patrol/internal/model"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OpenAIEvaluator evaluates pane content using an OpenAI-compatible Chat Completions API.
@@ -76,6 +78,32 @@ func (e *OpenAIEvaluator) Model() string {
 func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.LLMVerdict, error) {
 	userMessage := UserPromptTemplate + content
 
+	// Start a GenAI generation span following OTel GenAI semantic conventions.
+	// Span name: "{operation} {model}" per the spec.
+	ctx, span := evalTracer.Start(ctx, "chat "+e.model,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			// GenAI semantic conventions (required + recommended)
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.provider.name", "openai"),
+			attribute.String("gen_ai.request.model", e.model),
+			attribute.Int64("gen_ai.request.max_tokens", e.maxTokens),
+
+			// Langfuse-specific: ensure this shows as a "generation"
+			attribute.String("langfuse.observation.type", "generation"),
+		),
+	)
+	defer span.End()
+
+	// Record input (system + user messages as JSON)
+	inputMessages := []map[string]string{
+		{"role": "system", "content": SystemPrompt},
+		{"role": "user", "content": userMessage},
+	}
+	if inputJSON, err := json.Marshal(inputMessages); err == nil {
+		span.SetAttributes(attribute.String("gen_ai.input.messages", string(inputJSON)))
+	}
+
 	resp, err := e.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
 		Model: e.model,
 		Messages: []openai.ChatCompletionMessageParamUnion{
@@ -85,18 +113,46 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.
 		MaxCompletionTokens: openai.Int(e.maxTokens),
 	})
 	if err != nil {
+		span.SetAttributes(attribute.String("error.type", "api_error"))
 		return nil, fmt.Errorf("openai API call failed: %w", err)
 	}
 
 	if len(resp.Choices) == 0 {
+		span.SetAttributes(attribute.String("error.type", "empty_response"))
 		return nil, fmt.Errorf("openai API returned empty response")
 	}
 
-	text := stripMarkdownFences(resp.Choices[0].Message.Content)
+	rawText := resp.Choices[0].Message.Content
+	text := stripMarkdownFences(rawText)
+
+	// Record response attributes
+	span.SetAttributes(
+		attribute.String("gen_ai.response.model", resp.Model),
+		attribute.String("gen_ai.response.id", resp.ID),
+		attribute.Int64("gen_ai.usage.input_tokens", resp.Usage.PromptTokens),
+		attribute.Int64("gen_ai.usage.output_tokens", resp.Usage.CompletionTokens),
+	)
+	if resp.Choices[0].FinishReason != "" {
+		span.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{string(resp.Choices[0].FinishReason)}))
+	}
+
+	// Record output
+	outputMessages := []map[string]string{
+		{"role": "assistant", "content": rawText},
+	}
+	if outputJSON, err := json.Marshal(outputMessages); err == nil {
+		span.SetAttributes(attribute.String("gen_ai.output.messages", string(outputJSON)))
+	}
 
 	var verdict model.LLMVerdict
 	if err := json.Unmarshal([]byte(text), &verdict); err != nil {
 		return nil, fmt.Errorf("failed to parse LLM response as JSON: %w\nraw response: %s", err, text)
+	}
+
+	// Capture token usage from response
+	verdict.Usage = model.TokenUsage{
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
 	}
 
 	return &verdict, nil
