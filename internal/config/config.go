@@ -263,18 +263,5 @@ func MatchesExcludeList(name string, patterns []string) bool {
 
 // IsAzureEndpoint returns true if the URL is an Azure endpoint.
 func IsAzureEndpoint(url string) bool {
-	return len(url) > 0 && (contains(url, ".azure.com") || contains(url, ".azure.us"))
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return len(url) > 0 && (strings.Contains(url, ".azure.com") || strings.Contains(url, ".azure.us"))
 }

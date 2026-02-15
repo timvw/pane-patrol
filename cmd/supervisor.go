@@ -22,10 +22,10 @@ var supervisorCmd = &cobra.Command{
 shows which AI coding agents are blocked, and lets you unblock them
 with LLM-suggested actions or free-form text input.
 
-Configuration is loaded from .pane-supervisor.yaml or environment variables.
+Configuration is loaded from .pane-patrol.yaml or environment variables.
 See the README for all configuration options.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSupervisor()
+		return runSupervisor(cmd)
 	},
 }
 
@@ -33,7 +33,7 @@ func init() {
 	rootCmd.AddCommand(supervisorCmd)
 }
 
-func runSupervisor() error {
+func runSupervisor(cmd *cobra.Command) error {
 	ctx := context.Background()
 
 	// Load configuration: defaults -> config file -> env vars.
@@ -43,20 +43,22 @@ func runSupervisor() error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	// CLI flags override config file values for shared settings
-	if flagProvider != "" && flagProvider != "anthropic" {
+	// CLI flags override config file values for shared settings.
+	// Use Cobra's Changed() to detect flags explicitly set by the user,
+	// so that e.g. --provider anthropic correctly overrides a config file value of openai.
+	if cmd.Flags().Changed("provider") {
 		cfg.Provider = flagProvider
 	}
-	if flagModel != "" {
+	if cmd.Flags().Changed("model") {
 		cfg.Model = flagModel
 	}
-	if flagBaseURL != "" {
+	if cmd.Flags().Changed("base-url") {
 		cfg.BaseURL = flagBaseURL
 	}
-	if flagAPIKey != "" {
+	if cmd.Flags().Changed("api-key") {
 		cfg.APIKey = flagAPIKey
 	}
-	if flagMaxTokens > 0 {
+	if cmd.Flags().Changed("max-tokens") {
 		cfg.MaxTokens = flagMaxTokens
 	}
 
@@ -107,8 +109,10 @@ func runSupervisor() error {
 	}
 
 	tui := &supervisor.TUI{
-		Scanner:         scanner,
-		RefreshInterval: cfg.RefreshDuration,
+		Scanner:          scanner,
+		RefreshInterval:  cfg.RefreshDuration,
+		AutoNudge:        cfg.AutoNudge,
+		AutoNudgeMaxRisk: cfg.AutoNudgeMaxRisk,
 	}
 
 	return tui.Run(ctx)

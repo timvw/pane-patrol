@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/timvw/pane-patrol/internal/config"
 	"github.com/timvw/pane-patrol/internal/evaluator"
 	"github.com/timvw/pane-patrol/internal/mux"
 )
@@ -160,20 +161,7 @@ func newOpenAIEvaluator() (evaluator.Evaluator, error) {
 
 // isAzureEndpoint checks if a URL is an Azure endpoint.
 func isAzureEndpoint(url string) bool {
-	return len(url) > 0 && (contains(url, ".azure.com") || contains(url, ".azure.us"))
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return config.IsAzureEndpoint(url)
 }
 
 func envOrDefault(key, defaultValue string) string {

@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Pane represents a terminal multiplexer pane.
 type Pane struct {
@@ -81,6 +85,31 @@ type Action struct {
 type TokenUsage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
+}
+
+// BuildProcessHeader returns a process metadata header for the LLM.
+// This is pure transport — we're passing observable process info,
+// not interpreting it (ZFC compliant).
+// Returns an empty string if no process info is available.
+func BuildProcessHeader(pane Pane) string {
+	if pane.PID <= 0 && len(pane.ProcessTree) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[Process Info]\n")
+	b.WriteString(fmt.Sprintf("Session: %s\n", pane.Session))
+	b.WriteString(fmt.Sprintf("Shell PID: %d\n", pane.PID))
+	b.WriteString(fmt.Sprintf("Shell command: %s\n", pane.Command))
+	if len(pane.ProcessTree) > 0 {
+		b.WriteString("Child processes:\n")
+		for _, proc := range pane.ProcessTree {
+			b.WriteString(fmt.Sprintf("  %s\n", proc))
+		}
+	} else {
+		b.WriteString("Child processes: (none)\n")
+	}
+	b.WriteString("\n[Terminal Content]\n")
+	return b.String()
 }
 
 // LLMVerdict is the JSON structure returned by the LLM.
