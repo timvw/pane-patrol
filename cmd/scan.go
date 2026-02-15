@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/timvw/pane-patrol/internal/config"
 	"github.com/timvw/pane-patrol/internal/evaluator"
 	"github.com/timvw/pane-patrol/internal/model"
 	"github.com/timvw/pane-patrol/internal/mux"
@@ -47,6 +48,18 @@ The LLM decides everything — which panes are agents, which are blocked, and wh
 		panes, err := m.ListPanes(ctx, flagScanFilter)
 		if err != nil {
 			return fmt.Errorf("failed to list panes: %w", err)
+		}
+
+		// Apply exclude_sessions from config file
+		cfg, cfgErr := config.Load()
+		if cfgErr == nil && len(cfg.ExcludeSessions) > 0 {
+			filtered := panes[:0]
+			for _, p := range panes {
+				if !config.MatchesExcludeList(p.Session, cfg.ExcludeSessions) {
+					filtered = append(filtered, p)
+				}
+			}
+			panes = filtered
 		}
 
 		if len(panes) == 0 {

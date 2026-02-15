@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/timvw/pane-patrol/internal/config"
 	"github.com/timvw/pane-patrol/internal/evaluator"
 	"github.com/timvw/pane-patrol/internal/model"
 	"github.com/timvw/pane-patrol/internal/mux"
@@ -74,7 +75,7 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 	if len(s.ExcludeSessions) > 0 {
 		filtered := panes[:0]
 		for _, p := range panes {
-			if !matchesExcludeList(p.Session, s.ExcludeSessions) {
+			if !config.MatchesExcludeList(p.Session, s.ExcludeSessions) {
 				filtered = append(filtered, p)
 			}
 		}
@@ -293,21 +294,4 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 	}
 
 	return verdict, nil
-}
-
-// matchesExcludeList checks if a session name matches any pattern in the list.
-// Patterns ending with * are treated as prefix matches (e.g. "AIGGTM-*").
-// All other patterns are exact matches.
-func matchesExcludeList(session string, patterns []string) bool {
-	for _, pat := range patterns {
-		if strings.HasSuffix(pat, "*") {
-			prefix := pat[:len(pat)-1]
-			if strings.HasPrefix(session, prefix) {
-				return true
-			}
-		} else if session == pat {
-			return true
-		}
-	}
-	return false
 }

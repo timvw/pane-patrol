@@ -245,6 +245,22 @@ func parseDurationOrDisable(s string, fallback time.Duration) (time.Duration, er
 	return time.ParseDuration(s)
 }
 
+// MatchesExcludeList checks if a name matches any pattern in the exclude list.
+// Patterns ending with * are treated as prefix matches (e.g. "AIGGTM-*").
+// All other patterns are exact matches.
+func MatchesExcludeList(name string, patterns []string) bool {
+	for _, pat := range patterns {
+		if strings.HasSuffix(pat, "*") {
+			if strings.HasPrefix(name, pat[:len(pat)-1]) {
+				return true
+			}
+		} else if name == pat {
+			return true
+		}
+	}
+	return false
+}
+
 // IsAzureEndpoint returns true if the URL is an Azure endpoint.
 func IsAzureEndpoint(url string) bool {
 	return len(url) > 0 && (contains(url, ".azure.com") || contains(url, ".azure.us"))
