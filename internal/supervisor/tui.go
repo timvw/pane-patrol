@@ -1018,10 +1018,11 @@ func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int)
 	// Show pane target (e.g. ":0.1") indented under the session
 	paneLabel := fmt.Sprintf(":%d.%d", v.Window, v.Pane)
 
-	reason := v.Reason
-	if len(reason) > reasonWidth-1 {
-		reason = reason[:reasonWidth-4] + "..."
-	}
+	// Sanitize reason: collapse newlines/tabs to spaces and truncate.
+	// The LLM sometimes returns multi-line reasons or JSON fragments
+	// which would break the row-based TUI layout.
+	reason := strings.Join(strings.Fields(v.Reason), " ")
+	reason = truncate(reason, reasonWidth-1)
 
 	var nameCol, reasonCol string
 	if idx == m.cursor {
