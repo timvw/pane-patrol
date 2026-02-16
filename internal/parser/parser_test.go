@@ -177,12 +177,20 @@ func TestClaude_PermissionDialog(t *testing.T) {
 	if len(result.Actions) < 3 {
 		t.Errorf("expected at least 3 actions (with don't ask again), got %d", len(result.Actions))
 	}
-	// First action should be approve via 'y' key (raw mode)
-	if result.Actions[0].Keys != "y" {
-		t.Errorf("first action keys: got %q, want %q", result.Actions[0].Keys, "y")
+	// First action should be approve via numeric '1' key (raw mode)
+	if result.Actions[0].Keys != "1" {
+		t.Errorf("first action keys: got %q, want %q", result.Actions[0].Keys, "1")
 	}
 	if !result.Actions[0].Raw {
 		t.Error("first action should be Raw=true for Claude Code")
+	}
+	// "don't ask again" should be key "2"
+	if result.Actions[1].Keys != "2" {
+		t.Errorf("second action keys: got %q, want %q", result.Actions[1].Keys, "2")
+	}
+	// deny should be key "3"
+	if result.Actions[2].Keys != "3" {
+		t.Errorf("third action keys: got %q, want %q", result.Actions[2].Keys, "3")
 	}
 	// WaitingFor should show "Read — Read file: /etc/hosts"
 	if !contains(result.WaitingFor, "Read") {
@@ -214,8 +222,8 @@ func TestClaude_EditApproval(t *testing.T) {
 	if !result.Blocked {
 		t.Error("expected blocked=true for edit approval")
 	}
-	if result.Actions[0].Keys != "y" {
-		t.Errorf("first action keys: got %q, want %q", result.Actions[0].Keys, "y")
+	if result.Actions[0].Keys != "1" {
+		t.Errorf("first action keys: got %q, want %q", result.Actions[0].Keys, "1")
 	}
 	// WaitingFor should show "Edit — src/main.go"
 	if result.WaitingFor != "Edit — src/main.go" {

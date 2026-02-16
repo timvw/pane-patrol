@@ -18,16 +18,19 @@ import (
 // Active: tool-specific progress messages
 // Auto-resolve: "Auto-selecting in {N}s…"
 //
-// Keybinding context "Confirmation":
+// Input handling: Permission dialogs use the Select component (UA) which
+// renders numbered options (1. Yes, 2. Yes and don't ask again, 3. No).
+// The Select component handles input via:
 //
-//	y → confirm:yes (approve)
-//	n → confirm:no (deny)
-//	Enter → confirm:yes
-//	Escape → confirm:no
-//	Up/Down → navigate options
+//   - Number keys (1/2/3): direct option selection via raw useInput handler
+//   - Enter: select:accept (confirms focused option)
+//   - Escape: select:cancel
+//   - Up/Down, j/k: navigation
 //
-// NOTE: Number keys (1/2/3) do NOT work as expected — they're parsed as
-// generic "number", not individual digits.
+// IMPORTANT: The "y" and "n" keys are bound to confirm:yes/confirm:no in the
+// Confirmation keybinding context, but the permission dialog components do NOT
+// register handlers for these actions. The keystrokes are consumed by the
+// keybinding resolver and silently dropped. Use numeric keys instead.
 type ClaudeCodeParser struct{}
 
 func (p *ClaudeCodeParser) Name() string { return "claude_code" }
@@ -115,15 +118,21 @@ func (p *ClaudeCodeParser) parsePermissionDialog(content string) *Result {
 	hasDontAsk := strings.Contains(content, "don't ask again") ||
 		strings.Contains(content, "Yes, and don")
 
+	// Actions use numeric keys for the Select component's direct selection.
+	// The dialog shows: 1. Yes, 2. Yes and don't ask again, 3. No
 	actions := []model.Action{
-		// y sends confirm:yes in the Confirmation keybinding context
-		{Keys: "y", Label: "approve (yes)", Risk: "medium", Raw: true},
-		{Keys: "n", Label: "deny (no)", Risk: "low", Raw: true},
+		{Keys: "1", Label: "approve (yes)", Risk: "medium", Raw: true},
 	}
 	if hasDontAsk {
-		// Navigate to option 2, then confirm
 		actions = append(actions, model.Action{
-			Keys: "Down y", Label: "approve and don't ask again", Risk: "medium", Raw: true,
+			Keys: "2", Label: "approve and don't ask again", Risk: "medium", Raw: true,
+		})
+		actions = append(actions, model.Action{
+			Keys: "3", Label: "deny (no)", Risk: "low", Raw: true,
+		})
+	} else {
+		actions = append(actions, model.Action{
+			Keys: "Escape", Label: "deny (cancel)", Risk: "low", Raw: true,
 		})
 	}
 
@@ -146,14 +155,16 @@ func (p *ClaudeCodeParser) parseEditApproval(content string) *Result {
 
 	waitingFor := p.extractEditSummary(content)
 
+	// Edit approval also uses the Select component with numbered options.
+	// Typically: 1. Yes, 2. No (or similar)
 	return &Result{
 		Agent:      "claude_code",
 		Blocked:    true,
 		Reason:     "edit approval dialog",
 		WaitingFor: waitingFor,
 		Actions: []model.Action{
-			{Keys: "y", Label: "approve edit", Risk: "medium", Raw: true},
-			{Keys: "n", Label: "reject edit", Risk: "low", Raw: true},
+			{Keys: "1", Label: "approve edit", Risk: "medium", Raw: true},
+			{Keys: "Escape", Label: "reject edit", Risk: "low", Raw: true},
 		},
 		Recommended: 0,
 		Reasoning:   "deterministic parser: Claude Code edit approval dialog detected",
