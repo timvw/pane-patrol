@@ -73,7 +73,7 @@ func (e *AnthropicEvaluator) Model() string {
 	return e.model
 }
 
-var evalTracer = otel.Tracer("pane-supervisor")
+var evalTracer = otel.Tracer("pane-patrol/evaluator")
 
 // Evaluate sends pane content to the Anthropic API and returns the verdict.
 func (e *AnthropicEvaluator) Evaluate(ctx context.Context, content string) (*model.LLMVerdict, error) {

@@ -10,8 +10,7 @@ import (
 // It checks environment variables first, then falls back to checking
 // if the multiplexer binary exists and has a running server.
 //
-// ZFC compliance: This is infrastructure plumbing (which mux binary to call),
-// not content interpretation. Acceptable per ZFC principles.
+// This is infrastructure plumbing — selecting which mux binary to call.
 func Detect() (Multiplexer, error) {
 	// Check environment variables first.
 	if os.Getenv("TMUX") != "" {

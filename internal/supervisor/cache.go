@@ -100,13 +100,6 @@ func (c *VerdictCache) Invalidate(target string) {
 	c.mu.Unlock()
 }
 
-// Stats returns cache statistics.
-type CacheStats struct {
-	Entries int
-	Hits    int64
-	Misses  int64
-}
-
 // hashContent returns a hex-encoded SHA256 hash of the content.
 func hashContent(content string) string {
 	h := sha256.Sum256([]byte(content))

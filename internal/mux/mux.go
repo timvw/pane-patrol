@@ -1,8 +1,7 @@
 // Package mux provides an abstraction over terminal multiplexers (tmux, zellij).
 //
-// ZFC compliance: This package is pure transport. It captures observable reality
-// (pane content, session topology, process names) without interpreting or
-// classifying any of it. All judgment calls are deferred to the LLM evaluator.
+// This package is pure transport — it captures observable reality (pane content,
+// session topology, process names) and provides it to parsers and evaluators.
 package mux
 
 import (

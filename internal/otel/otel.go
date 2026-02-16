@@ -16,10 +16,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -27,10 +25,11 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const (
-	serviceName    = "pane-supervisor"
-	serviceVersion = "0.1.0"
-)
+const serviceName = "pane-supervisor"
+
+// Version is set by the caller (from the linker-injected cmd.Version).
+// Defaults to "dev" if not set.
+var Version = "dev"
 
 // OTELConfig holds the configuration needed by the OTEL init.
 type OTELConfig struct {
@@ -38,21 +37,12 @@ type OTELConfig struct {
 	Headers  string // Comma-separated key=value pairs, e.g. "Authorization=Basic abc123"
 }
 
-// Telemetry holds the OTEL providers and instruments.
+// Telemetry holds the OTEL providers.
 type Telemetry struct {
 	tp *sdktrace.TracerProvider
 	mp *sdkmetric.MeterProvider
 
-	// Pre-created instruments for hot paths
-	Tracer       trace.Tracer
-	ScanDuration metric.Float64Histogram
-	EvalDuration metric.Float64Histogram
-	TokensInput  metric.Int64Counter
-	TokensOutput metric.Int64Counter
-	CacheHits    metric.Int64Counter
-	CacheMisses  metric.Int64Counter
-	PanesScanned metric.Int64Counter
-	PanesBlocked metric.Int64Counter
+	Tracer trace.Tracer
 }
 
 // parseHeaders parses a comma-separated "key=value,key2=value2" string into a map.
@@ -82,7 +72,7 @@ func Init(ctx context.Context, cfg OTELConfig) (*Telemetry, error) {
 	res, err := resource.New(ctx,
 		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
-			semconv.ServiceVersion(serviceVersion),
+			semconv.ServiceVersion(Version),
 		),
 		resource.WithHost(),
 	)
@@ -151,29 +141,8 @@ func Init(ctx context.Context, cfg OTELConfig) (*Telemetry, error) {
 		otel.SetMeterProvider(t.mp)
 	}
 
-	// Create tracer and meter (works even without exporters — just no-ops)
+	// Create tracer (works even without exporters — just no-ops)
 	t.Tracer = otel.Tracer(serviceName)
-	meter := otel.Meter(serviceName)
-
-	// Pre-create metric instruments
-	t.ScanDuration, _ = meter.Float64Histogram("scan.duration",
-		metric.WithDescription("Time for a full scan cycle in seconds"),
-		metric.WithUnit("s"))
-	t.EvalDuration, _ = meter.Float64Histogram("eval.duration",
-		metric.WithDescription("Time for a single pane evaluation in seconds"),
-		metric.WithUnit("s"))
-	t.TokensInput, _ = meter.Int64Counter("tokens.input",
-		metric.WithDescription("Total LLM input tokens consumed"))
-	t.TokensOutput, _ = meter.Int64Counter("tokens.output",
-		metric.WithDescription("Total LLM output tokens consumed"))
-	t.CacheHits, _ = meter.Int64Counter("cache.hits",
-		metric.WithDescription("Number of cache hits (LLM call skipped)"))
-	t.CacheMisses, _ = meter.Int64Counter("cache.misses",
-		metric.WithDescription("Number of cache misses (LLM call made)"))
-	t.PanesScanned, _ = meter.Int64Counter("panes.scanned",
-		metric.WithDescription("Total panes scanned"))
-	t.PanesBlocked, _ = meter.Int64Counter("panes.blocked",
-		metric.WithDescription("Total panes found blocked"))
 
 	return t, nil
 }
@@ -186,29 +155,4 @@ func (t *Telemetry) Shutdown(ctx context.Context) {
 	if t.mp != nil {
 		_ = t.mp.Shutdown(ctx)
 	}
-}
-
-// RecordScan records metrics for a completed scan cycle.
-func (t *Telemetry) RecordScan(ctx context.Context, duration time.Duration, panes, blocked, cacheHits int, inputTokens, outputTokens int64) {
-	attrs := metric.WithAttributes(
-		attribute.Int("panes.total", panes),
-		attribute.Int("panes.blocked", blocked),
-		attribute.Int("cache.hits", cacheHits),
-	)
-	t.ScanDuration.Record(ctx, duration.Seconds(), attrs)
-	t.PanesScanned.Add(ctx, int64(panes))
-	t.PanesBlocked.Add(ctx, int64(blocked))
-	t.CacheHits.Add(ctx, int64(cacheHits))
-	t.CacheMisses.Add(ctx, int64(panes-cacheHits))
-	t.TokensInput.Add(ctx, inputTokens)
-	t.TokensOutput.Add(ctx, outputTokens)
-}
-
-// RecordEval records metrics for a single pane evaluation.
-func (t *Telemetry) RecordEval(ctx context.Context, target string, duration time.Duration, cached bool, inputTokens, outputTokens int64) {
-	attrs := metric.WithAttributes(
-		attribute.String("pane.target", target),
-		attribute.Bool("cache.hit", cached),
-	)
-	t.EvalDuration.Record(ctx, duration.Seconds(), attrs)
 }

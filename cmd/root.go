@@ -23,14 +23,13 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "pane-patrol",
-	Short: "ZFC-compliant terminal pane monitor for AI coding agents",
+	Short: "Terminal pane monitor for AI coding agents",
 	Long: `pane-patrol monitors terminal multiplexer panes for blocked AI coding agents.
 
-It uses an LLM to evaluate pane content and determine whether an AI agent
-is waiting for human input (confirmation dialogs, permission prompts, etc.).
-
-Following ZFC (Zero False Commands) principles, all judgment calls are made
-by the LLM — Go code only provides transport.`,
+It uses deterministic parsers for known agents (OpenCode, Claude Code, Codex)
+and falls back to LLM evaluation for unknown agents. When an agent is blocked
+(permission dialogs, confirmation prompts, idle at prompt), pane-patrol
+suggests and can auto-execute unblocking actions.`,
 }
 
 // Execute runs the root command.
@@ -58,110 +57,58 @@ func getMultiplexer() (mux.Multiplexer, error) {
 	return mux.Detect()
 }
 
-// getEvaluator returns the configured LLM evaluator.
+// getEvaluator builds a Config from CLI flags/env and delegates to
+// newEvaluatorFromConfig, which is the single factory shared with the
+// supervisor command.
 func getEvaluator() (evaluator.Evaluator, error) {
-	switch flagProvider {
+	cfg := &config.Config{
+		Provider:  flagProvider,
+		Model:     flagModel,
+		BaseURL:   flagBaseURL,
+		APIKey:    flagAPIKey,
+		MaxTokens: flagMaxTokens,
+	}
+
+	// Apply the same env-var resolution the supervisor uses.
+	config.ResolveEnvDefaults(cfg)
+
+	return newEvaluatorFromConfig(cfg)
+}
+
+// newEvaluatorFromConfig is the single evaluator factory used by both
+// the check/scan commands (via getEvaluator) and the supervisor command.
+func newEvaluatorFromConfig(cfg *config.Config) (evaluator.Evaluator, error) {
+	if cfg.APIKey == "" {
+		return nil, fmt.Errorf("no API key found. Set api_key in config file, or PANE_PATROL_API_KEY / AZURE_OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY env var")
+	}
+
+	extraHeaders := map[string]string{}
+	if config.IsAzureEndpoint(cfg.BaseURL) {
+		extraHeaders["api-key"] = cfg.APIKey
+	}
+
+	switch cfg.Provider {
 	case "anthropic":
-		return newAnthropicEvaluator()
+		return evaluator.NewAnthropicEvaluator(evaluator.AnthropicConfig{
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			Model:        cfg.Model,
+			MaxTokens:    cfg.MaxTokens,
+			ExtraHeaders: extraHeaders,
+		}), nil
+
 	case "openai":
-		return newOpenAIEvaluator()
+		return evaluator.NewOpenAIEvaluator(evaluator.OpenAIConfig{
+			BaseURL:      cfg.BaseURL,
+			APIKey:       cfg.APIKey,
+			Model:        cfg.Model,
+			MaxTokens:    cfg.MaxTokens,
+			ExtraHeaders: extraHeaders,
+		}), nil
+
 	default:
-		return nil, fmt.Errorf("unknown provider %q (supported: anthropic, openai)", flagProvider)
+		return nil, fmt.Errorf("unknown provider %q (supported: anthropic, openai)", cfg.Provider)
 	}
-}
-
-// newAnthropicEvaluator creates an Anthropic evaluator with the resolved config.
-func newAnthropicEvaluator() (evaluator.Evaluator, error) {
-	model := flagModel
-	if model == "" {
-		model = "claude-sonnet-4-5"
-	}
-
-	baseURL := flagBaseURL
-	apiKey := flagAPIKey
-	extraHeaders := map[string]string{}
-
-	// Resolve base URL and API key from environment.
-	if baseURL == "" {
-		resourceName := os.Getenv("AZURE_RESOURCE_NAME")
-		if resourceName != "" {
-			// The Anthropic SDK appends /v1/messages to the base URL.
-			// Azure AI Foundry endpoint is: https://<resource>.services.ai.azure.com/anthropic/v1/messages
-			// So we set base URL to .../anthropic/ (SDK adds v1/messages).
-			baseURL = fmt.Sprintf("https://%s.services.ai.azure.com/anthropic/", resourceName)
-		}
-	}
-	if apiKey == "" {
-		apiKey = os.Getenv("AZURE_OPENAI_API_KEY")
-	}
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		// Direct Anthropic API: SDK default base URL is https://api.anthropic.com/
-		// No need to override — just let the SDK use its default.
-	}
-
-	if apiKey == "" {
-		return nil, fmt.Errorf("no API key found. Set PANE_PATROL_API_KEY, AZURE_OPENAI_API_KEY, or ANTHROPIC_API_KEY")
-	}
-
-	// Azure AI Foundry needs both "api-key" (Azure) and "x-api-key" (Anthropic SDK default) headers.
-	if os.Getenv("AZURE_RESOURCE_NAME") != "" || isAzureEndpoint(baseURL) {
-		extraHeaders["api-key"] = apiKey
-	}
-
-	return evaluator.NewAnthropicEvaluator(evaluator.AnthropicConfig{
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		Model:        model,
-		MaxTokens:    flagMaxTokens,
-		ExtraHeaders: extraHeaders,
-	}), nil
-}
-
-// newOpenAIEvaluator creates an OpenAI evaluator with the resolved config.
-func newOpenAIEvaluator() (evaluator.Evaluator, error) {
-	model := flagModel
-	if model == "" {
-		model = "gpt-4o-mini"
-	}
-
-	baseURL := flagBaseURL
-	apiKey := flagAPIKey
-	extraHeaders := map[string]string{}
-
-	if baseURL == "" {
-		resourceName := os.Getenv("AZURE_RESOURCE_NAME")
-		if resourceName != "" {
-			baseURL = fmt.Sprintf("https://%s.openai.azure.com/openai/v1", resourceName)
-		}
-	}
-	if apiKey == "" {
-		apiKey = os.Getenv("AZURE_OPENAI_API_KEY")
-	}
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-	}
-
-	if apiKey == "" {
-		return nil, fmt.Errorf("no API key found. Set PANE_PATROL_API_KEY, AZURE_OPENAI_API_KEY, or OPENAI_API_KEY")
-	}
-
-	if os.Getenv("AZURE_RESOURCE_NAME") != "" || isAzureEndpoint(baseURL) {
-		extraHeaders["api-key"] = apiKey
-	}
-
-	return evaluator.NewOpenAIEvaluator(evaluator.OpenAIConfig{
-		BaseURL:      baseURL,
-		APIKey:       apiKey,
-		Model:        model,
-		MaxTokens:    flagMaxTokens,
-		ExtraHeaders: extraHeaders,
-	}), nil
-}
-
-// isAzureEndpoint checks if a URL is an Azure endpoint.
-func isAzureEndpoint(url string) bool {
-	return config.IsAzureEndpoint(url)
 }
 
 func envOrDefault(key, defaultValue string) string {

@@ -20,7 +20,7 @@ var UserPromptTemplate string
 
 // stripMarkdownFences removes markdown code fences from LLM responses.
 // Some models wrap JSON responses in ```json ... ``` despite being told not to.
-// This is pure transport/formatting — not content interpretation (ZFC compliant).
+// This is pure formatting — stripping wrapper text the model shouldn't add.
 func stripMarkdownFences(text string) string {
 	text = strings.TrimSpace(text)
 	// Strip ```json or ``` prefix.

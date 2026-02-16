@@ -1,9 +1,8 @@
 // Package evaluator provides LLM-based evaluation of terminal pane content.
 //
-// ZFC compliance: This package is the bridge between transport (pane capture)
-// and judgment (LLM). Go code constructs the prompt and parses the response,
-// but ALL classification decisions (is it an agent? is it blocked? why?) are
-// made by the LLM. Go never interprets pane content directly.
+// This package is the LLM fallback path for agents not handled by
+// deterministic parsers in the parser package. It constructs prompts from
+// pane content and parses the LLM's structured verdict response.
 package evaluator
 
 import (

@@ -86,6 +86,17 @@ func Load() (*Config, error) {
 	// Environment variables override everything
 	mergeEnv(cfg)
 
+	// Normalize and validate auto-nudge max risk
+	if cfg.AutoNudgeMaxRisk != "" {
+		cfg.AutoNudgeMaxRisk = strings.ToLower(cfg.AutoNudgeMaxRisk)
+		switch cfg.AutoNudgeMaxRisk {
+		case "low", "medium", "high":
+			// valid
+		default:
+			return nil, fmt.Errorf("invalid auto_nudge_max_risk %q (must be low, medium, or high)", cfg.AutoNudgeMaxRisk)
+		}
+	}
+
 	// Parse durations
 	var err error
 	cfg.RefreshDuration, err = parseDurationOrDisable(cfg.Refresh, 30*time.Second)
@@ -259,6 +270,51 @@ func MatchesExcludeList(name string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// ResolveEnvDefaults applies environment variable defaults to a Config that
+// was built from CLI flags (not from config.Load). This fills in API key
+// fallbacks and Azure base URL resolution — the same logic Load() applies
+// via mergeEnv, but usable standalone for the check/scan commands.
+func ResolveEnvDefaults(cfg *Config) {
+	// Default model per provider
+	if cfg.Model == "" {
+		switch cfg.Provider {
+		case "anthropic":
+			cfg.Model = "claude-sonnet-4-5"
+		case "openai":
+			cfg.Model = "gpt-4o-mini"
+		}
+	}
+
+	// API key fallbacks
+	if cfg.APIKey == "" {
+		if v := os.Getenv("AZURE_OPENAI_API_KEY"); v != "" {
+			cfg.APIKey = v
+		}
+	}
+	if cfg.APIKey == "" {
+		if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+			cfg.APIKey = v
+		}
+	}
+	if cfg.APIKey == "" {
+		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+			cfg.APIKey = v
+		}
+	}
+
+	// Azure base URL fallback
+	if cfg.BaseURL == "" {
+		if rn := os.Getenv("AZURE_RESOURCE_NAME"); rn != "" {
+			switch cfg.Provider {
+			case "anthropic":
+				cfg.BaseURL = fmt.Sprintf("https://%s.services.ai.azure.com/anthropic/", rn)
+			case "openai":
+				cfg.BaseURL = fmt.Sprintf("https://%s.openai.azure.com/openai/v1", rn)
+			}
+		}
+	}
 }
 
 // IsAzureEndpoint returns true if the URL is an Azure endpoint.
