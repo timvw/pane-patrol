@@ -12,6 +12,19 @@ import (
 // Source reference: binary analysis of /opt/homebrew/Caskroom/claude-code/2.1.42/claude
 // Built with Bun, uses Ink (React terminal framework) in raw mode.
 //
+// Thinking indicator: "✻" (U+273B, variable yfT in source).
+//
+//   - Active:    "✻ <verb>… (<duration> · ↓ <tokens>)" — randomized -ing verb + ellipsis.
+//     ~150+ verbs (source: K8T array): Pondering, Scampering, Reasoning, Cogitating,
+//     Brewing, Cooking, Clauding, Philosophising, Razzle-dazzling, etc.
+//   - Completed: "✻ <verb> for <duration>" — randomized past-tense verb, NO ellipsis.
+//     8 verbs (source: thT array): Baked, Brewed, Churned, Cogitated, Cooked,
+//     Crunched, Sautéed, Worked.
+//   - Idle:      "✻ Idle" — no ellipsis, no duration.
+//
+// The key distinguisher is the ellipsis: active lines ALWAYS have "…",
+// completed/idle lines NEVER do.
+//
 // Permission dialog: "Claude needs your permission to use {toolName}"
 // Bash approval: "Do you want to proceed?" with numbered options
 // Edit approval: "Do you want to make this edit to {filename}?"
@@ -96,7 +109,7 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 
 // isIdleAtBottom checks if the bottom of the screen shows a clear idle
 // prompt. Claude Code's idle state has "❯" prompt and/or "? for shortcuts"
-// footer, with "✻ Worked for" (completed, not active).
+// footer, with a completed thinking indicator (e.g., "✻ Cogitated for 2m").
 //
 // Returns false if active execution indicators are also present in the bottom
 // lines — the "? for shortcuts" footer may persist during execution, and
@@ -108,8 +121,10 @@ func (p *ClaudeCodeParser) isIdleAtBottom(content string) bool {
 	for _, line := range bottom {
 		trimmed := strings.TrimSpace(line)
 
-		// Active "✻ Verb…" at the bottom = NOT idle
-		if strings.HasPrefix(trimmed, "✻") && !strings.HasPrefix(trimmed, "✻ Worked") {
+		// Active "✻ Verb…" at the bottom = NOT idle.
+		// Completed verbs are randomized (Cogitated, Baked, Brewed, etc.)
+		// so we rely solely on the ellipsis to distinguish active from completed.
+		if strings.HasPrefix(trimmed, "✻") {
 			if strings.Contains(trimmed, "…") || strings.Contains(trimmed, "...") {
 				return false
 			}
@@ -273,22 +288,18 @@ func (p *ClaudeCodeParser) parseAutoResolve(content string) *Result {
 // portion of the captured content. Only the last bottomLines lines are
 // scanned to avoid false positives from stale indicators in scrollback.
 //
-// Claude Code uses "✻" as its thinking/working indicator. The pattern is:
-//
-//	Active:    "✻ Scampering… (2m 22s · ↓ 2.8k tokens)" — verb + ellipsis
-//	Completed: "✻ Worked for 3m 10s" — past tense, no ellipsis
-//
-// The verbs are randomized (Scampering, Pondering, Reasoning, Thinking, etc.)
-// so we match on the "✻" prefix + ellipsis rather than specific verbs.
+// Claude Code uses "✻" (U+273B) as its thinking/working indicator.
+// Active lines always have ellipsis; completed/idle lines never do.
+// See ClaudeCodeParser doc comment for the full verb lists.
 func (p *ClaudeCodeParser) isActiveExecution(content string) bool {
 	lines := strings.Split(content, "\n")
 	lines = bottomNonEmpty(lines, bottomLines)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// "✻" thinking/working indicator with ellipsis = active
-		// "✻ Worked for" = completed (not active)
-		if strings.HasPrefix(trimmed, "✻") && !strings.HasPrefix(trimmed, "✻ Worked") {
+		// "✻ Verb…" = active (ellipsis present)
+		// "✻ Verb for Xm Ys" / "✻ Idle" = completed/idle (no ellipsis)
+		if strings.HasPrefix(trimmed, "✻") {
 			if strings.Contains(trimmed, "…") || strings.Contains(trimmed, "...") {
 				return true
 			}

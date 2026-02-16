@@ -285,11 +285,35 @@ func TestClaude_ActiveThinkingVariousVerbs(t *testing.T) {
 }
 
 func TestClaude_CompletedNotActive(t *testing.T) {
-	// "✻ Worked for" is the COMPLETED state — not active.
+	// Completed verbs are randomized (8 possible: Baked, Brewed, Churned,
+	// Cogitated, Cooked, Crunched, Sautéed, Worked). All should be treated
+	// as idle — the key is the ABSENCE of "…" (ellipsis).
+	completedVerbs := []string{
+		"Baked", "Brewed", "Churned", "Cogitated",
+		"Cooked", "Crunched", "Sautéed", "Worked",
+	}
+	p := &ClaudeCodeParser{}
+	for _, verb := range completedVerbs {
+		t.Run(verb, func(t *testing.T) {
+			content := "  Task completed successfully.\n\n✻ " + verb + " for 3m 10s\n\n❯\n? for shortcuts"
+			result := p.Parse(content, []string{"claude"})
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if !result.Blocked {
+				t.Errorf("expected blocked=true after completion (✻ %s for = idle)", verb)
+			}
+		})
+	}
+}
+
+func TestClaude_IdleIndicator(t *testing.T) {
+	// "✻ Idle" is a distinct idle state — no verb, no ellipsis, no duration.
+	// Should be treated as blocked (idle at prompt).
 	content := `
   Task completed successfully.
 
-✻ Worked for 3m 10s
+✻ Idle
 
 ❯
 ? for shortcuts
@@ -300,7 +324,10 @@ func TestClaude_CompletedNotActive(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 	if !result.Blocked {
-		t.Error("expected blocked=true after completion (✻ Worked for = idle)")
+		t.Error("expected blocked=true for '✻ Idle' state")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "idle at prompt")
 	}
 }
 
