@@ -18,10 +18,19 @@ scrollback history. Only the bottom lines reflect the agent's current state.
 Detecting active execution (NOT blocked) — look for ANY of these:
 - A "▣ Build" or "■ Build" line (with or without a model name) means an
   LLM call or tool execution is in progress. This is the strongest signal.
+- A "▣ Plan · <model>" or "▣ Build · <model>" line WITHOUT elapsed time
+  (no "· Xs" or "· Xm Ys" suffix) means execution JUST STARTED and is
+  still active. Only when elapsed time is shown AND no other active
+  indicators are present has the step completed.
 - Status bar text containing "esc interrupt", "esc to interrupt",
   "esc again to interrupt", or "press esc to stop" means mid-execution.
-- A progress bar (▄, █, ░, ▓, or ⬝⬝⬝ sequences) indicates a running task.
+- A progress bar (▄, █, ■, ░, ▓, or ⬝⬝⬝ sequences) indicates a running
+  task. This includes mixed-fill patterns like "■■■⬝⬝⬝⬝⬝".
 - Braille spinners (⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) indicate a running operation.
+- A subagent or background task label such as "Explore Task", "Task",
+  or "General Task" accompanied by a spinner or a tool call count
+  (e.g., "(8 toolcalls)") means a subagent is actively working. This
+  is active execution even though the main input area may appear empty.
 - A "QUEUED" label means a task is waiting to run.
 - Streaming command output (go: downloading, npm: downloading, etc.).
 - "Click to expand" with a collapsed output section means a tool call just

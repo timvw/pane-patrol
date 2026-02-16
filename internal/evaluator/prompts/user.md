@@ -23,7 +23,11 @@ Determine:
    
    An agent is NOT blocked only when it is actively working: you can see
    a running spinner, an active "Build" or "Plan" indicator with elapsed
-   time still counting, or tool calls being executed.
+   time still counting, tool calls being executed, or a subagent/task
+   running in the background (e.g., "Explore Task", "Task", or
+   "General Task" with a spinner or tool call count). A progress bar
+   (e.g., "■■■⬝⬝⬝⬝⬝") or "esc interrupt" in the status bar also
+   indicates active execution.
 
 3. If it IS blocked, what actions could unblock it. For each action provide:
    - "keys": the exact tmux send-keys input. Use literal text for typed

@@ -97,13 +97,25 @@ func (t *Tmux) run(ctx context.Context, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// getProcessTree returns the command lines of all child processes of the given PID.
-// This walks one level deep (direct children of the pane's shell process).
+// getProcessTree returns the command lines of all descendant processes of the given PID.
+// Walks up to maxProcessTreeDepth levels deep to capture subprocesses spawned by agents.
 // Returns nil on any error — process info is best-effort, never fatal.
+const maxProcessTreeDepth = 3
+
 func getProcessTree(pid int) []string {
 	if pid <= 0 {
 		return nil
 	}
+	return collectProcessTree(pid, 0)
+}
+
+// collectProcessTree recursively collects child process command lines.
+// Each level of nesting is indented with two additional spaces.
+func collectProcessTree(pid, depth int) []string {
+	if pid <= 0 || depth >= maxProcessTreeDepth {
+		return nil
+	}
+
 	// pgrep -P finds direct children of the given PID
 	cmd := exec.Command("pgrep", "-P", strconv.Itoa(pid))
 	out, err := cmd.Output()
@@ -111,13 +123,14 @@ func getProcessTree(pid int) []string {
 		return nil
 	}
 
+	indent := strings.Repeat("  ", depth)
 	var tree []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		childPID := strings.TrimSpace(line)
 		if childPID == "" {
 			continue
 		}
-		// Get the full command line of each child process
+		// Get the full command line of this child process
 		ps := exec.Command("ps", "-o", "args=", "-p", childPID)
 		psOut, err := ps.Output()
 		if err != nil {
@@ -125,7 +138,12 @@ func getProcessTree(pid int) []string {
 		}
 		args := strings.TrimSpace(string(psOut))
 		if args != "" {
-			tree = append(tree, args)
+			tree = append(tree, indent+args)
+		}
+		// Recurse into grandchildren
+		cpid, err := strconv.Atoi(childPID)
+		if err == nil {
+			tree = append(tree, collectProcessTree(cpid, depth+1)...)
 		}
 	}
 	return tree

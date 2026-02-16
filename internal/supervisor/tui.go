@@ -331,8 +331,10 @@ func (m *tuiModel) clampActionCursor() {
 	}
 }
 
-// executeSelectedAction sends the currently highlighted action to the target pane,
-// navigates tmux to that pane so the user can see the result, and triggers a rescan.
+// executeSelectedAction sends the currently highlighted action to the target pane
+// and triggers a rescan. Does NOT auto-jump to the target pane — the user stays
+// in the supervisor TUI and can see the status message. Manual navigation via
+// Enter/click is still available.
 func (m *tuiModel) executeSelectedAction() tea.Cmd {
 	v := m.selectedVerdict()
 	if v == nil || !v.Blocked || m.actionCursor >= len(v.Actions) {
@@ -349,8 +351,6 @@ func (m *tuiModel) executeSelectedAction() tea.Cmd {
 	if m.scanner.Cache != nil {
 		m.scanner.Cache.Invalidate(v.Target)
 	}
-	// Navigate tmux to the target pane so the user sees the result
-	jumpToPane(v.Target)
 	m.focus = panelList
 	m.scanning = true
 	return m.doScan()
