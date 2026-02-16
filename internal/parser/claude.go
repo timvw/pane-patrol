@@ -1,0 +1,230 @@
+package parser
+
+import (
+	"strings"
+
+	"github.com/timvw/pane-patrol/internal/model"
+)
+
+// ClaudeCodeParser recognizes the Claude Code TUI.
+//
+// Source reference: binary analysis of /opt/homebrew/Caskroom/claude-code/2.1.42/claude
+// Built with Bun, uses Ink (React terminal framework) in raw mode.
+//
+// Permission dialog: "Claude needs your permission to use {toolName}"
+// Bash approval: "Do you want to proceed?" with numbered options
+// Edit approval: "Do you want to make this edit to {filename}?"
+// Footer: "Esc to cancel · Tab to amend"
+// Active: tool-specific progress messages
+// Auto-resolve: "Auto-selecting in {N}s…"
+//
+// Keybinding context "Confirmation":
+//
+//	y → confirm:yes (approve)
+//	n → confirm:no (deny)
+//	Enter → confirm:yes
+//	Escape → confirm:no
+//	Up/Down → navigate options
+//
+// NOTE: Number keys (1/2/3) do NOT work as expected — they're parsed as
+// generic "number", not individual digits.
+type ClaudeCodeParser struct{}
+
+func (p *ClaudeCodeParser) Name() string { return "claude_code" }
+
+func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
+	if !p.isClaudeCode(content, processTree) {
+		return nil
+	}
+
+	if r := p.parsePermissionDialog(content); r != nil {
+		return r
+	}
+	if r := p.parseEditApproval(content); r != nil {
+		return r
+	}
+	if r := p.parseAutoResolve(content); r != nil {
+		return r
+	}
+	if p.isActiveExecution(content) {
+		return &Result{
+			Agent:     "claude_code",
+			Blocked:   false,
+			Reason:    "actively executing",
+			Reasoning: "deterministic parser: detected active tool execution indicators",
+		}
+	}
+
+	// Default: idle at prompt
+	return &Result{
+		Agent:      "claude_code",
+		Blocked:    true,
+		Reason:     "idle at prompt",
+		WaitingFor: "idle at prompt",
+		Actions: []model.Action{
+			{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
+		},
+		Recommended: 0,
+		Reasoning:   "deterministic parser: Claude Code TUI detected, no active execution indicators, agent is idle",
+	}
+}
+
+func (p *ClaudeCodeParser) isClaudeCode(content string, processTree []string) bool {
+	for _, proc := range processTree {
+		lower := strings.ToLower(proc)
+		// Match "claude" process but not "claude-code-supervisor" etc.
+		if strings.Contains(lower, "claude") && !strings.Contains(lower, "pane-patrol") &&
+			!strings.Contains(lower, "pane-supervisor") {
+			return true
+		}
+	}
+	// Fallback: look for Claude Code-specific TUI markers
+	if strings.Contains(content, "Claude needs your permission") {
+		return true
+	}
+	if strings.Contains(content, "Esc to cancel") && strings.Contains(content, "Tab to amend") {
+		return true
+	}
+	if strings.Contains(content, "Do you want to proceed?") && p.hasNumberedOptions(content) {
+		return true
+	}
+	// "? for shortcuts" is the persistent footer in Claude Code's TUI
+	if strings.Contains(content, "? for shortcuts") {
+		return true
+	}
+	// "✻" is Claude Code's unique thinking/working indicator
+	if strings.Contains(content, "✻") {
+		return true
+	}
+	return false
+}
+
+// parsePermissionDialog detects "Claude needs your permission to use" or
+// "Do you want to proceed?" with numbered Yes/No options.
+func (p *ClaudeCodeParser) parsePermissionDialog(content string) *Result {
+	hasPermission := strings.Contains(content, "Claude needs your permission")
+	hasProceed := strings.Contains(content, "Do you want to proceed?")
+
+	if !hasPermission && !hasProceed {
+		return nil
+	}
+
+	var waitingFor string
+	if hasPermission {
+		waitingFor = extractBlock(content, "Claude needs your permission")
+	} else {
+		waitingFor = extractBlock(content, "Do you want to proceed?")
+	}
+
+	// Determine if "don't ask again" option is available
+	hasDontAsk := strings.Contains(content, "don't ask again") ||
+		strings.Contains(content, "Yes, and don")
+
+	actions := []model.Action{
+		// y sends confirm:yes in the Confirmation keybinding context
+		{Keys: "y", Label: "approve (yes)", Risk: "medium", Raw: true},
+		{Keys: "n", Label: "deny (no)", Risk: "low", Raw: true},
+	}
+	if hasDontAsk {
+		// Navigate to option 2, then confirm
+		actions = append(actions, model.Action{
+			Keys: "Down y", Label: "approve and don't ask again", Risk: "medium", Raw: true,
+		})
+	}
+
+	return &Result{
+		Agent:       "claude_code",
+		Blocked:     true,
+		Reason:      "permission dialog waiting for approval",
+		WaitingFor:  waitingFor,
+		Actions:     actions,
+		Recommended: 0,
+		Reasoning:   "deterministic parser: Claude Code permission dialog detected",
+	}
+}
+
+// parseEditApproval detects "Do you want to make this edit to {filename}?"
+func (p *ClaudeCodeParser) parseEditApproval(content string) *Result {
+	if !strings.Contains(content, "Do you want to make this edit to") {
+		return nil
+	}
+
+	waitingFor := extractBlock(content, "Do you want to make this edit to")
+
+	return &Result{
+		Agent:      "claude_code",
+		Blocked:    true,
+		Reason:     "edit approval dialog",
+		WaitingFor: waitingFor,
+		Actions: []model.Action{
+			{Keys: "y", Label: "approve edit", Risk: "medium", Raw: true},
+			{Keys: "n", Label: "reject edit", Risk: "low", Raw: true},
+		},
+		Recommended: 0,
+		Reasoning:   "deterministic parser: Claude Code edit approval dialog detected",
+	}
+}
+
+// parseAutoResolve detects "Auto-selecting in {N}s…" — the agent will
+// auto-resolve soon, so it's technically not blocked.
+func (p *ClaudeCodeParser) parseAutoResolve(content string) *Result {
+	if !strings.Contains(content, "Auto-selecting in") {
+		return nil
+	}
+
+	return &Result{
+		Agent:     "claude_code",
+		Blocked:   false,
+		Reason:    "auto-resolving permission dialog",
+		Reasoning: "deterministic parser: auto-select countdown detected, will resolve without intervention",
+	}
+}
+
+// isActiveExecution checks for tool execution indicators.
+//
+// Claude Code uses "✻" as its thinking/working indicator. The pattern is:
+//
+//	Active:    "✻ Scampering… (2m 22s · ↓ 2.8k tokens)" — verb + ellipsis
+//	Completed: "✻ Worked for 3m 10s" — past tense, no ellipsis
+//
+// The verbs are randomized (Scampering, Pondering, Reasoning, Thinking, etc.)
+// so we match on the "✻" prefix + ellipsis rather than specific verbs.
+func (p *ClaudeCodeParser) isActiveExecution(content string) bool {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// "✻" thinking/working indicator with ellipsis = active
+		// "✻ Worked for" = completed (not active)
+		if strings.HasPrefix(trimmed, "✻") && !strings.HasPrefix(trimmed, "✻ Worked") {
+			if strings.Contains(trimmed, "…") || strings.Contains(trimmed, "...") {
+				return true
+			}
+		}
+
+		// Tool-specific progress messages (without ✻ prefix)
+		if strings.HasSuffix(trimmed, "…") || strings.HasSuffix(trimmed, "...") {
+			if strings.Contains(trimmed, "Fetching") || strings.Contains(trimmed, "Reading") ||
+				strings.Contains(trimmed, "Writing") || strings.Contains(trimmed, "Searching") ||
+				strings.Contains(trimmed, "Running") || strings.Contains(trimmed, "Executing") {
+				return true
+			}
+		}
+		// Braille spinner
+		for _, r := range trimmed {
+			if r >= '⠋' && r <= '⠿' {
+				return true
+			}
+		}
+		// Active tool use with streaming output
+		if strings.Contains(trimmed, "Searching:") || strings.Contains(trimmed, "Fetching") {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *ClaudeCodeParser) hasNumberedOptions(content string) bool {
+	return strings.Contains(content, "1.") && strings.Contains(content, "2.") &&
+		(strings.Contains(content, "Yes") || strings.Contains(content, "No"))
+}

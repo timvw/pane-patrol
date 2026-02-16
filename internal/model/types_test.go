@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -74,5 +75,70 @@ func TestBuildProcessHeader(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestVerdict_RecommendedZeroInJSON(t *testing.T) {
+	// Recommended=0 is a valid index (first action). It must appear in JSON
+	// output, not be omitted by omitempty.
+	v := Verdict{
+		Agent:   "opencode",
+		Blocked: true,
+		Reason:  "permission dialog",
+		Actions: []Action{
+			{Keys: "Enter", Label: "approve", Risk: "medium"},
+			{Keys: "Escape", Label: "reject", Risk: "low"},
+		},
+		Recommended: 0,
+	}
+
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	// The JSON must contain "recommended":0
+	if !strings.Contains(string(data), `"recommended":0`) {
+		t.Errorf("JSON output missing \"recommended\":0, got: %s", string(data))
+	}
+}
+
+func TestLLMVerdict_RecommendedZeroInJSON(t *testing.T) {
+	v := LLMVerdict{
+		Agent:       "claude_code",
+		Blocked:     true,
+		Reason:      "permission dialog",
+		Actions:     []Action{{Keys: "y", Label: "approve", Risk: "medium"}},
+		Recommended: 0,
+	}
+
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	if !strings.Contains(string(data), `"recommended":0`) {
+		t.Errorf("JSON output missing \"recommended\":0, got: %s", string(data))
+	}
+}
+
+func TestVerdict_WaitingForInJSON(t *testing.T) {
+	v := Verdict{
+		Agent:      "opencode",
+		Blocked:    true,
+		Reason:     "permission dialog",
+		WaitingFor: "△ Permission required\n$ git diff HEAD",
+	}
+
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	if !strings.Contains(string(data), `"waiting_for"`) {
+		t.Errorf("JSON output missing waiting_for field, got: %s", string(data))
+	}
+	if !strings.Contains(string(data), "Permission required") {
+		t.Errorf("JSON output missing waiting_for content, got: %s", string(data))
 	}
 }

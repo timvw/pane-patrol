@@ -37,8 +37,8 @@ type Verdict struct {
 	// Command is the current command running in the pane.
 	Command string `json:"command"`
 
-	// Agent is the detected agent name (e.g., "claude-code", "opencode", "not_an_agent").
-	// Determined by the LLM, not by Go code (ZFC compliance).
+	// Agent is the detected agent name (e.g., "claude_code", "opencode", "codex", "not_an_agent").
+	// Set by deterministic parsers for known agents, or the LLM for unknown agents.
 	Agent string `json:"agent"`
 	// Blocked indicates whether the pane is waiting for human input.
 	Blocked bool `json:"blocked"`
@@ -51,11 +51,11 @@ type Verdict struct {
 	Reasoning string `json:"reasoning"`
 
 	// Actions is a list of possible actions to unblock the pane.
-	// Determined by the LLM, not by Go code (ZFC compliance).
+	// Set by deterministic parsers for known agents, or the LLM for unknown agents.
 	// Only populated when the pane is blocked.
 	Actions []Action `json:"actions,omitempty"`
-	// Recommended is the index into Actions that the LLM recommends.
-	Recommended int `json:"recommended,omitempty"`
+	// Recommended is the 0-based index into Actions for the recommended action.
+	Recommended int `json:"recommended"`
 
 	// Usage tracks token consumption for this evaluation.
 	Usage TokenUsage `json:"usage,omitempty"`
@@ -74,7 +74,6 @@ type Verdict struct {
 }
 
 // Action represents a possible action to unblock a pane.
-// Determined by the LLM, not by Go code (ZFC compliance).
 type Action struct {
 	// Keys is the tmux send-keys input (e.g., "y", "C-c", "Enter").
 	Keys string `json:"keys"`
@@ -82,6 +81,11 @@ type Action struct {
 	Label string `json:"label"`
 	// Risk is the risk level: "low", "medium", "high".
 	Risk string `json:"risk"`
+	// Raw, when true, sends Keys as a single raw keypress (no Escape+Enter
+	// appended). Use this for TUIs that run in raw mode and process each
+	// keypress individually (e.g., Claude Code, OpenCode, Codex).
+	// LLM-generated actions leave this false (default literal mode).
+	Raw bool `json:"raw,omitempty"`
 }
 
 // TokenUsage tracks LLM token consumption for a single evaluation.
@@ -90,9 +94,8 @@ type TokenUsage struct {
 	OutputTokens int64 `json:"output_tokens"`
 }
 
-// BuildProcessHeader returns a process metadata header for the LLM.
-// This is pure transport — we're passing observable process info,
-// not interpreting it (ZFC compliant).
+// BuildProcessHeader returns a process metadata header prepended to pane
+// content before evaluation. Provides context for both parsers and LLM.
 // Returns an empty string if no process info is available.
 func BuildProcessHeader(pane Pane) string {
 	if pane.PID <= 0 && len(pane.ProcessTree) == 0 {
@@ -123,7 +126,7 @@ type LLMVerdict struct {
 	Reason      string   `json:"reason"`
 	WaitingFor  string   `json:"waiting_for"`
 	Actions     []Action `json:"actions,omitempty"`
-	Recommended int      `json:"recommended,omitempty"`
+	Recommended int      `json:"recommended"`
 	Reasoning   string   `json:"reasoning"`
 
 	// Usage is populated by the evaluator, not parsed from the LLM response.
