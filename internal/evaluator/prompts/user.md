@@ -21,13 +21,19 @@ Determine:
       "Build", "Plan", or thinking indicator is spinning/running — the status
       bar shows a completed state and the input area is empty and waiting)
    
-    An agent is NOT blocked only when it is actively working: you can see
-    a running spinner, an active "Build" or "Plan" indicator with elapsed
-    time still counting, tool calls being executed, or a subagent/task
-    running in the background (e.g., "Explore Task", "Task", or
-    "General Task" with a spinner or tool call count). A progress bar
-    (e.g., "■■■⬝⬝⬝⬝⬝") or "esc interrupt" in the status bar also
-    indicates active execution.
+     An agent is NOT blocked only when it is actively working: you can see
+     a running spinner, an active "Build" or "Plan" indicator with elapsed
+     time still counting, tool calls being executed, or a subagent/task
+     running in the background (e.g., "Explore Task", "Task", or
+     "General Task" with a spinner or tool call count). A progress bar
+     (e.g., "■■■⬝⬝⬝⬝⬝") or "esc interrupt" in the status bar also
+     indicates active execution.
+     
+     HOWEVER: permission/confirmation dialogs OVERRIDE active indicators.
+     If a "Do you want to proceed?", Yes/No prompt, Allow/Reject choice,
+     or numbered selection menu appears ANYWHERE on screen, the agent IS
+     blocked — even if a Build timer is still counting. The Build timer
+     does not pause for permission dialogs.
     
     Special case — stuck subagent: If a subagent/task shows a spinner but
     its toolcall count is "(0 toolcalls)" and there is NO "esc interrupt"

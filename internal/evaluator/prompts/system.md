@@ -41,6 +41,20 @@ NOT blocked — even if all todos are checked, even if the main content
 area shows completed work, even if there appears to be an empty input
 area above the active indicator.
 
+Exception — permission/confirmation dialog INSIDE an active Build step:
+A Build or Plan indicator may show elapsed time still counting while the
+agent is actually blocked on a tool-permission or confirmation dialog.
+The Build timer does NOT pause for these dialogs — it keeps ticking.
+If you see ANY of the following ANYWHERE on screen, the agent IS blocked
+regardless of Build/Plan indicators:
+- "Do you want to proceed?" or "Permission required"
+- A Yes/No, Y/n, Confirm/Cancel, or Allow/Reject choice
+- "Allow once / Allow always / Reject"
+- A numbered choice menu (e.g., "1. Yes  2. No  3. No, and don't ask again")
+- Any prompt asking the user to approve or deny a tool/file/network action
+These dialogs OVERRIDE all active-execution signals. Classify as BLOCKED
+and suggest appropriate actions (approve, reject, etc.).
+
 Exception — stuck subagent: A subagent/task label with a spinner BUT a
 toolcall count of "(0 toolcalls)" and no "esc interrupt" in the status
 bar suggests the subagent's API call has stalled. The spinner animates
