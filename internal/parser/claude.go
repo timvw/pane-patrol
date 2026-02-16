@@ -122,6 +122,10 @@ func (p *ClaudeCodeParser) isIdleAtBottom(content string) bool {
 		if hasProgressVerb(trimmed) {
 			return false
 		}
+		// Active tool use with streaming output (colon suffix = live results)
+		if strings.Contains(trimmed, "Searching:") {
+			return false
+		}
 		// Braille spinner characters indicate active execution
 		for _, r := range trimmed {
 			if r >= '⠋' && r <= '⠿' {
