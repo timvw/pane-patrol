@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -367,13 +368,13 @@ func TestScanner_ProcessHeaderIncluded(t *testing.T) {
 	if receivedContent == "" {
 		t.Fatal("evaluator received empty content")
 	}
-	if !contains(receivedContent, "[Process Info]") {
+	if !strings.Contains(receivedContent, "[Process Info]") {
 		t.Error("content missing [Process Info] header")
 	}
-	if !contains(receivedContent, "opencode --model gpt-4o") {
+	if !strings.Contains(receivedContent, "opencode --model gpt-4o") {
 		t.Error("content missing process tree entry")
 	}
-	if !contains(receivedContent, "[Terminal Content]") {
+	if !strings.Contains(receivedContent, "[Terminal Content]") {
 		t.Error("content missing [Terminal Content] header")
 	}
 }
@@ -408,7 +409,7 @@ func TestScanner_ListPanesError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when ListPanes fails")
 	}
-	if !contains(err.Error(), "failed to list panes") {
+	if !strings.Contains(err.Error(), "failed to list panes") {
 		t.Errorf("error should wrap ListPanes failure, got: %v", err)
 	}
 }
@@ -501,17 +502,4 @@ func TestScanner_WaitingForWiredFromLLM(t *testing.T) {
 	if len(v.Actions) != 1 {
 		t.Errorf("Actions: got %d, want 1", len(v.Actions))
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && containsSubstr(s, substr)
-}
-
-func containsSubstr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

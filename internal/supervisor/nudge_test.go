@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,7 +120,7 @@ func TestNudger_EnterAllRetriesFail(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when all Enter retries fail")
 	}
-	if !contains(err.Error(), "failed to send Enter after 3 attempts") {
+	if !strings.Contains(err.Error(), "failed to send Enter after 3 attempts") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
@@ -139,7 +140,7 @@ func TestNudger_LiteralSendFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when literal send fails")
 	}
-	if !contains(err.Error(), "send literal keys") {
+	if !strings.Contains(err.Error(), "send literal keys") {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
