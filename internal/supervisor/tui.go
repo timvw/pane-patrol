@@ -969,11 +969,21 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		return lines
 	}
 
-	// Blocked: show the question/reason
-	if v.Reason != "" {
+	// Blocked: show the dialog the agent is waiting on, then the reason
+	if v.WaitingFor != "" {
+		for _, wl := range strings.Split(v.WaitingFor, "\n") {
+			for _, rl := range wrapText(wl, width) {
+				lines = append(lines, blockedStyle.Render(rl))
+			}
+		}
+	} else if v.Reason != "" {
 		for _, rl := range wrapText(v.Reason, width) {
 			lines = append(lines, blockedStyle.Render(rl))
 		}
+	}
+	// Show the one-line reason below the dialog as context
+	if v.WaitingFor != "" && v.Reason != "" {
+		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
 	}
 	lines = append(lines, "") // blank separator
 

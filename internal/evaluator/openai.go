@@ -7,6 +7,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
 	"github.com/timvw/pane-patrol/internal/model"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -111,6 +112,9 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.
 			openai.UserMessage(userMessage),
 		},
 		MaxCompletionTokens: openai.Int(e.maxTokens),
+		ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: ptr(shared.NewResponseFormatJSONObjectParam()),
+		},
 	})
 	if err != nil {
 		span.SetAttributes(attribute.String("error.type", "api_error"))
@@ -157,3 +161,5 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.
 
 	return &verdict, nil
 }
+
+func ptr[T any](v T) *T { return &v }

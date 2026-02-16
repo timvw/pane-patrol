@@ -44,6 +44,9 @@ type Verdict struct {
 	Blocked bool `json:"blocked"`
 	// Reason is a one-line summary of the verdict.
 	Reason string `json:"reason"`
+	// WaitingFor is a verbatim extract of the dialog, prompt, or question the
+	// agent is blocked on. Only populated when blocked is true.
+	WaitingFor string `json:"waiting_for"`
 	// Reasoning is the LLM's detailed step-by-step analysis.
 	Reasoning string `json:"reasoning"`
 
@@ -118,6 +121,7 @@ type LLMVerdict struct {
 	Agent       string   `json:"agent"`
 	Blocked     bool     `json:"blocked"`
 	Reason      string   `json:"reason"`
+	WaitingFor  string   `json:"waiting_for"`
 	Actions     []Action `json:"actions,omitempty"`
 	Recommended int      `json:"recommended,omitempty"`
 	Reasoning   string   `json:"reasoning"`

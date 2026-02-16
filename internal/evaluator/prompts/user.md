@@ -58,17 +58,27 @@ Determine:
 
 Think step by step about what you observe on screen.
 
-Respond ONLY with a JSON object (no markdown fences, no extra text):
+Your response MUST be a JSON object with ALL of these fields (no markdown
+fences, no extra text). Do NOT skip any field:
 {
   "agent": "<detected agent name or 'not_an_agent'>",
   "blocked": <true or false>,
   "reason": "<one-line summary>",
-  "actions": [
-    { "keys": "<tmux send-keys input>", "label": "<description>", "risk": "<low|medium|high>" }
-  ],
+  "waiting_for": "<verbatim dialog/prompt text copied from terminal — see rules below>",
+  "actions": [{"keys": "<tmux send-keys>", "label": "<description>", "risk": "<low|medium|high>"}],
   "recommended": <index of recommended action, starting from 0>,
-  "reasoning": "<detailed step-by-step analysis of what you see on screen>"
+  "reasoning": "<detailed step-by-step analysis>"
 }
+
+Field "waiting_for" — REQUIRED when blocked is true, DO NOT OMIT:
+- Copy the VERBATIM dialog/prompt/question lines from the terminal content.
+- Include what is being requested, the question text, and available choices.
+- Compact extract of the dialog only, not the entire screen.
+- Use \n for line breaks. Examples:
+  "Permission required\nAccess external directory ~/foo/bar\nAllow once  Allow always  Reject"
+  "Bash command\ngit show a5e61c1 -- save.sh\nDo you want to proceed?\n1. Yes  2. Yes, and don't ask again  3. No"
+  "idle at prompt"
+- When blocked is false: set to "".
 
 When "blocked" is true, "actions" MUST contain at least one action. Order
 actions from most likely helpful to least. The first action should usually

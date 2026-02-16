@@ -11,6 +11,16 @@ state that is NOT blocked is when the agent is actively executing — a spinner 
 running, a "Build" or "Plan" step shows elapsed time still counting, or tool
 calls are being streamed.
 
+When the agent IS blocked, extract the VERBATIM dialog or prompt it is waiting
+on into the "waiting_for" field. Copy the relevant lines from the screen as-is,
+including the command being requested, the question text, and the available
+choices. This should be a compact extract — just the dialog itself, not the
+entire screen. For example, a permission prompt might look like:
+  Bash command: git show a5e61c1 -- scripts/save.sh
+  Do you want to proceed?
+  1. Yes  2. Yes, and don't ask again  3. No
+If the agent is idle at its input prompt, set "waiting_for" to "idle at prompt".
+
 CRITICAL — check the BOTTOM of the screen FIRST. The most recent state is
 at the bottom. The top/middle may show completed tasks, old output, or
 scrollback history. Only the bottom lines reflect the agent's current state.
