@@ -139,6 +139,13 @@ func (n *Nudger) nudgeRaw(paneID, keys string) error {
 // or a literal character/string (y, n, etc.). The caller is responsible for
 // sending each token with the appropriate flag (raw for control sequences,
 // -l for literals).
+//
+// NOTE: This unconditionally splits on spaces, so a literal text payload
+// containing spaces (e.g., "hello world") would be split into separate
+// tokens. This is only used by nudgeRaw (raw=true actions), where all
+// key sequences are either single tokens ("1", "Enter", "Escape") or
+// intentional multi-key sequences ("Down Enter"). Free-form text input
+// uses nudgeLiteral (raw=false), which does not call this function.
 func splitKeySequence(keys string) []string {
 	parts := strings.Split(keys, " ")
 	if len(parts) <= 1 {

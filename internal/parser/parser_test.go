@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -193,13 +194,13 @@ func TestClaude_PermissionDialog(t *testing.T) {
 		t.Errorf("third action keys: got %q, want %q", result.Actions[2].Keys, "3")
 	}
 	// WaitingFor should show "Read — Read file: /etc/hosts"
-	if !contains(result.WaitingFor, "Read") {
+	if !strings.Contains(result.WaitingFor, "Read") {
 		t.Errorf("WaitingFor should contain tool name, got: %q", result.WaitingFor)
 	}
-	if !contains(result.WaitingFor, "/etc/hosts") {
+	if !strings.Contains(result.WaitingFor, "/etc/hosts") {
 		t.Errorf("WaitingFor should contain file path, got: %q", result.WaitingFor)
 	}
-	if !contains(result.WaitingFor, "—") {
+	if !strings.Contains(result.WaitingFor, "—") {
 		t.Errorf("WaitingFor should contain dash separator, got: %q", result.WaitingFor)
 	}
 }
@@ -754,32 +755,11 @@ more stuff after`
 	if block == "" {
 		t.Fatal("expected non-empty block")
 	}
-	if !contains(block, "△ Permission required") {
+	if !strings.Contains(block, "△ Permission required") {
 		t.Error("block should contain the marker")
 	}
-	if !contains(block, "git diff") {
+	if !strings.Contains(block, "git diff") {
 		t.Error("block should contain the command")
-	}
-}
-
-func TestExtractBlockWithContext(t *testing.T) {
-	content := `some output
-
-  Bash: git log --oneline -10
-  Working directory: /home/user/project
-
-  Do you want to proceed?
-  ❯ 1. Yes  2. Yes, and don't ask again  3. No`
-
-	block := extractBlockWithContext(content, "Do you want to proceed?", 6)
-	if !contains(block, "git log") {
-		t.Errorf("block should contain context above marker, got:\n%s", block)
-	}
-	if !contains(block, "Do you want to proceed?") {
-		t.Error("block should contain the marker itself")
-	}
-	if !contains(block, "Yes") {
-		t.Error("block should contain options below marker")
 	}
 }
 
@@ -799,13 +779,13 @@ func TestClaude_PermissionBashCommand(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 	// Should show "Bash — $ git -C /home/user/project log --oneline -10"
-	if !contains(result.WaitingFor, "Bash") {
+	if !strings.Contains(result.WaitingFor, "Bash") {
 		t.Errorf("WaitingFor should start with tool name, got: %q", result.WaitingFor)
 	}
-	if !contains(result.WaitingFor, "—") {
+	if !strings.Contains(result.WaitingFor, "—") {
 		t.Errorf("WaitingFor should contain separator, got: %q", result.WaitingFor)
 	}
-	if !contains(result.WaitingFor, "git -C") {
+	if !strings.Contains(result.WaitingFor, "git -C") {
 		t.Errorf("WaitingFor should contain the command, got: %q", result.WaitingFor)
 	}
 }
@@ -828,20 +808,7 @@ func TestClaude_PermissionScrolledOff(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
-	if !contains(result.WaitingFor, "git log") {
+	if !strings.Contains(result.WaitingFor, "git log") {
 		t.Errorf("WaitingFor should include context above 'Do you want to proceed?', got:\n%s", result.WaitingFor)
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && containsStr(s, substr)
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

@@ -217,8 +217,6 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		}
 	}
 
-	s.Metrics.RecordCacheMiss(ctx)
-
 	// --- Tier 1: Deterministic parser for known agents ---
 	// Try parsers first — instant, free, 100% accurate for known agents.
 	if s.Parsers != nil {
@@ -282,6 +280,9 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 	}
 
 	// --- Tier 2: LLM fallback for unrecognized agents ---
+	// Record cache miss only when falling through to LLM (parser hits are
+	// not cache misses in the meaningful sense — they bypass both caches).
+	s.Metrics.RecordCacheMiss(ctx)
 	llmVerdict, err := s.Evaluator.Evaluate(ctx, content)
 	if err != nil {
 		return nil, fmt.Errorf("evaluation failed: %w", err)

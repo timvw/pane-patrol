@@ -71,7 +71,9 @@ func (r *Registry) Parse(content string, processTree []string) *Result {
 // captured content to examine for idle/active state. This must be small
 // enough that stale indicators from prior turns—even in short captures—
 // are excluded when a clear idle prompt is present at the very bottom.
-const bottomLines = 5
+// 8 lines gives enough room for status bars and multi-line dialogs while
+// still excluding old output from prior turns.
+const bottomLines = 8
 
 // bottomNonEmpty returns the last n non-empty (after trimming) lines from
 // a slice. This gives us the "current state" at the bottom of the screen,

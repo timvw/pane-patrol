@@ -290,7 +290,7 @@ func (p *ClaudeCodeParser) extractPermissionSummary(content string, hasPermissio
 
 	// Try to extract tool name from "Claude needs your permission to use {tool}"
 	var toolName string
-	var permIdx int = -1
+	var permIdx = -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.Contains(trimmed, "Claude needs your permission to use") {
@@ -304,7 +304,7 @@ func (p *ClaudeCodeParser) extractPermissionSummary(content string, hasPermissio
 	}
 
 	// Find "Do you want to proceed?" to know where the dialog options start
-	var proceedIdx int = -1
+	var proceedIdx = -1
 	for i, line := range lines {
 		if strings.Contains(line, "Do you want to proceed?") {
 			proceedIdx = i
