@@ -37,12 +37,13 @@ type OTELConfig struct {
 	Headers  string // Comma-separated key=value pairs, e.g. "Authorization=Basic abc123"
 }
 
-// Telemetry holds the OTEL providers.
+// Telemetry holds the OTEL providers and metric instruments.
 type Telemetry struct {
 	tp *sdktrace.TracerProvider
 	mp *sdkmetric.MeterProvider
 
-	Tracer trace.Tracer
+	Tracer  trace.Tracer
+	Metrics *Metrics
 }
 
 // parseHeaders parses a comma-separated "key=value,key2=value2" string into a map.
@@ -143,6 +144,13 @@ func Init(ctx context.Context, cfg OTELConfig) (*Telemetry, error) {
 
 	// Create tracer (works even without exporters — just no-ops)
 	t.Tracer = otel.Tracer(serviceName)
+
+	// Create metric instruments (no-op when no MeterProvider is registered)
+	metrics, err := NewMetrics()
+	if err != nil {
+		return nil, fmt.Errorf("otel metrics: %w", err)
+	}
+	t.Metrics = metrics
 
 	return t, nil
 }

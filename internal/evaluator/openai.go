@@ -130,11 +130,13 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.
 	text := stripMarkdownFences(rawText)
 
 	// Record response attributes
+	cachedTokens := resp.Usage.PromptTokensDetails.CachedTokens
 	span.SetAttributes(
 		attribute.String("gen_ai.response.model", resp.Model),
 		attribute.String("gen_ai.response.id", resp.ID),
 		attribute.Int64("gen_ai.usage.input_tokens", resp.Usage.PromptTokens),
 		attribute.Int64("gen_ai.usage.output_tokens", resp.Usage.CompletionTokens),
+		attribute.Int64("gen_ai.usage.cache_read_input_tokens", cachedTokens),
 	)
 	if resp.Choices[0].FinishReason != "" {
 		span.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{string(resp.Choices[0].FinishReason)}))
@@ -153,10 +155,11 @@ func (e *OpenAIEvaluator) Evaluate(ctx context.Context, content string) (*model.
 		return nil, fmt.Errorf("failed to parse LLM response as JSON: %w\nraw response: %s", err, text)
 	}
 
-	// Capture token usage from response
+	// Capture token usage from response (including prompt cache metrics)
 	verdict.Usage = model.TokenUsage{
-		InputTokens:  resp.Usage.PromptTokens,
-		OutputTokens: resp.Usage.CompletionTokens,
+		InputTokens:          resp.Usage.PromptTokens,
+		OutputTokens:         resp.Usage.CompletionTokens,
+		CacheReadInputTokens: cachedTokens,
 	}
 
 	return &verdict, nil

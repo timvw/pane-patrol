@@ -116,6 +116,11 @@ func runSupervisor(cmd *cobra.Command) error {
 	// Resolve own pane to skip self-evaluation
 	selfTarget := resolveSelfTarget()
 
+	var metrics *telem.Metrics
+	if tel != nil {
+		metrics = tel.Metrics
+	}
+
 	scanner := &supervisor.Scanner{
 		Mux:             m,
 		Evaluator:       eval,
@@ -123,6 +128,7 @@ func runSupervisor(cmd *cobra.Command) error {
 		Filter:          cfg.Filter,
 		ExcludeSessions: cfg.ExcludeSessions,
 		Parallel:        cfg.Parallel,
+		Metrics:         metrics,
 		SessionID:       sessionID,
 		SelfTarget:      selfTarget,
 		Cache:           supervisor.NewVerdictCache(cfg.CacheTTLDuration),

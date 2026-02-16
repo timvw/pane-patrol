@@ -92,6 +92,14 @@ type Action struct {
 type TokenUsage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
+
+	// CacheReadInputTokens is the number of input tokens read from the
+	// provider's prompt cache (Anthropic cache_read_input_tokens,
+	// OpenAI prompt_tokens_details.cached_tokens).
+	CacheReadInputTokens int64 `json:"cache_read_input_tokens,omitempty"`
+	// CacheCreationInputTokens is the number of input tokens used to
+	// create a new cache entry (Anthropic only).
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // BuildProcessHeader returns a process metadata header prepended to pane

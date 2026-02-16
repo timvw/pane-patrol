@@ -136,6 +136,8 @@ func (e *AnthropicEvaluator) Evaluate(ctx context.Context, content string) (*mod
 		attribute.String("gen_ai.response.model", e.model),
 		attribute.Int64("gen_ai.usage.input_tokens", resp.Usage.InputTokens),
 		attribute.Int64("gen_ai.usage.output_tokens", resp.Usage.OutputTokens),
+		attribute.Int64("gen_ai.usage.cache_read_input_tokens", resp.Usage.CacheReadInputTokens),
+		attribute.Int64("gen_ai.usage.cache_creation_input_tokens", resp.Usage.CacheCreationInputTokens),
 	)
 	if string(resp.StopReason) != "" {
 		span.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{string(resp.StopReason)}))
@@ -154,10 +156,12 @@ func (e *AnthropicEvaluator) Evaluate(ctx context.Context, content string) (*mod
 		return nil, fmt.Errorf("failed to parse LLM response as JSON: %w\nraw response: %s", err, text)
 	}
 
-	// Capture token usage from response
+	// Capture token usage from response (including prompt cache metrics)
 	verdict.Usage = model.TokenUsage{
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
+		InputTokens:              resp.Usage.InputTokens,
+		OutputTokens:             resp.Usage.OutputTokens,
+		CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+		CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 	}
 
 	return &verdict, nil

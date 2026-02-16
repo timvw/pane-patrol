@@ -152,9 +152,11 @@ type tuiModel struct {
 	autoNudgeMaxRisk string // maximum risk: "low", "medium", "high"
 
 	// cumulative token usage (incremented after each scan)
-	totalInputTokens  int64
-	totalOutputTokens int64
-	totalCacheHits    int
+	totalInputTokens         int64
+	totalOutputTokens        int64
+	totalCacheReadTokens     int64
+	totalCacheCreationTokens int64
+	totalCacheHits           int
 }
 
 func (t *TUI) Run(ctx context.Context) error {
@@ -381,6 +383,8 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, v := range msg.result.Verdicts {
 				m.totalInputTokens += v.Usage.InputTokens
 				m.totalOutputTokens += v.Usage.OutputTokens
+				m.totalCacheReadTokens += v.Usage.CacheReadInputTokens
+				m.totalCacheCreationTokens += v.Usage.CacheCreationInputTokens
 			}
 
 			// Auto-nudge blocked panes (only when not focused on actions/typing)
@@ -798,8 +802,11 @@ func (m *tuiModel) viewVerdictList() string {
 		b.WriteString("  ")
 		tokenInfo := fmt.Sprintf("tokens: %s in / %s out",
 			formatTokens(m.totalInputTokens), formatTokens(m.totalOutputTokens))
+		if m.totalCacheReadTokens > 0 {
+			tokenInfo += fmt.Sprintf(" | cached: %s", formatTokens(m.totalCacheReadTokens))
+		}
 		if m.totalCacheHits > 0 {
-			tokenInfo += fmt.Sprintf(" | cache hits: %d", m.totalCacheHits)
+			tokenInfo += fmt.Sprintf(" | eval cache: %d", m.totalCacheHits)
 		}
 		b.WriteString(dimStyle.Render(tokenInfo))
 	}

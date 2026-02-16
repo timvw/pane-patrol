@@ -17,6 +17,7 @@ import (
 	"github.com/timvw/pane-patrol/internal/evaluator"
 	"github.com/timvw/pane-patrol/internal/model"
 	"github.com/timvw/pane-patrol/internal/mux"
+	ppotel "github.com/timvw/pane-patrol/internal/otel"
 	"github.com/timvw/pane-patrol/internal/parser"
 )
 
@@ -32,8 +33,9 @@ type Scanner struct {
 	Parallel        int
 	Verbose         bool
 	Cache           *VerdictCache
-	SessionID       string // Langfuse session ID — groups all scans from one supervisor run
-	SelfTarget      string // pane target of this supervisor process (skipped during scan)
+	Metrics         *ppotel.Metrics // OTEL metric counters; nil-safe
+	SessionID       string          // Langfuse session ID — groups all scans from one supervisor run
+	SelfTarget      string          // pane target of this supervisor process (skipped during scan)
 }
 
 // ScanResult contains the verdicts and metadata from a scan.
@@ -103,6 +105,7 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 			v, err := s.evaluatePane(ctx, p)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: pane %s: %v\n", p.Target, err)
+				s.Metrics.RecordEvaluation(ctx, "error")
 				verdicts[idx] = model.Verdict{
 					Target:      p.Target,
 					Session:     p.Session,
@@ -136,13 +139,15 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 
 	// Record span attributes for the completed scan
 	blocked := 0
-	var totalIn, totalOut int64
+	var totalIn, totalOut, totalCacheRead, totalCacheCreation int64
 	for _, v := range verdicts {
 		if v.Blocked {
 			blocked++
 		}
 		totalIn += v.Usage.InputTokens
 		totalOut += v.Usage.OutputTokens
+		totalCacheRead += v.Usage.CacheReadInputTokens
+		totalCacheCreation += v.Usage.CacheCreationInputTokens
 	}
 	span.SetAttributes(
 		attribute.Int("panes.total", len(verdicts)),
@@ -150,6 +155,8 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 		attribute.Int("cache.hits", int(cacheHits)),
 		attribute.Int64("tokens.input", totalIn),
 		attribute.Int64("tokens.output", totalOut),
+		attribute.Int64("tokens.cache_read", totalCacheRead),
+		attribute.Int64("tokens.cache_creation", totalCacheCreation),
 	)
 
 	return result, nil
@@ -204,9 +211,13 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 				attribute.String("verdict.agent", cached.Agent),
 				attribute.Bool("verdict.blocked", cached.Blocked),
 			)
+			s.Metrics.RecordCacheHit(ctx)
+			s.Metrics.RecordEvaluation(ctx, "cache")
 			return cached, nil
 		}
 	}
+
+	s.Metrics.RecordCacheMiss(ctx)
 
 	// --- Tier 1: Deterministic parser for known agents ---
 	// Try parsers first — instant, free, 100% accurate for known agents.
@@ -258,6 +269,8 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 				attribute.String("langfuse.observation.metadata.verdict_blocked", fmt.Sprintf("%v", verdict.Blocked)),
 				attribute.String("langfuse.observation.metadata.verdict_source", "deterministic_parser"),
 			)
+
+			s.Metrics.RecordEvaluation(ctx, "parser")
 
 			// Store in cache for future scans
 			if s.Cache != nil {
@@ -319,11 +332,20 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		attribute.Bool("verdict.blocked", verdict.Blocked),
 		attribute.Int64("tokens.input", verdict.Usage.InputTokens),
 		attribute.Int64("tokens.output", verdict.Usage.OutputTokens),
+		attribute.Int64("tokens.cache_read", verdict.Usage.CacheReadInputTokens),
+		attribute.Int64("tokens.cache_creation", verdict.Usage.CacheCreationInputTokens),
 
 		// Langfuse filterable metadata for verdict results
 		attribute.String("langfuse.observation.metadata.verdict_agent", verdict.Agent),
 		attribute.String("langfuse.observation.metadata.verdict_blocked", fmt.Sprintf("%v", verdict.Blocked)),
 		attribute.String("langfuse.observation.metadata.verdict_reason", verdict.Reason),
+	)
+
+	s.Metrics.RecordEvaluation(ctx, "llm")
+	s.Metrics.RecordTokens(ctx,
+		s.Evaluator.Provider(), s.Evaluator.Model(),
+		verdict.Usage.InputTokens, verdict.Usage.OutputTokens,
+		verdict.Usage.CacheReadInputTokens, verdict.Usage.CacheCreationInputTokens,
 	)
 
 	// Store in cache for future scans
