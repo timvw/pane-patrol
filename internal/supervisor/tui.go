@@ -341,7 +341,7 @@ func (m *tuiModel) executeSelectedAction() tea.Cmd {
 		return nil
 	}
 	action := v.Actions[m.actionCursor]
-	err := NudgePane(v.Target, action.Keys)
+	err := NudgePane(v.Target, action.Keys, action.Raw)
 	if err != nil {
 		m.message = fmt.Sprintf("Nudge failed: %v", err)
 	} else {
@@ -455,7 +455,9 @@ func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	item := m.items[clickedIdx]
 	if item.kind == itemPane {
 		// Navigate tmux to this pane
-		jumpToPane(m.verdicts[item.paneIdx].Target)
+		if errMsg := jumpToPane(m.verdicts[item.paneIdx].Target); errMsg != "" {
+			m.message = errMsg
+		}
 	} else {
 		// Session header: toggle expand/collapse
 		m.expanded[item.session] = !m.expanded[item.session]
@@ -547,7 +549,9 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Pane item: navigate tmux to this pane
-		jumpToPane(m.verdicts[item.paneIdx].Target)
+		if errMsg := jumpToPane(m.verdicts[item.paneIdx].Target); errMsg != "" {
+			m.message = errMsg
+		}
 		return m, nil
 
 	case "right", "l", "tab":
@@ -731,7 +735,7 @@ func (m *tuiModel) handleTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		text := m.textInput.Value()
 		if text != "" && m.textTarget != nil {
 			target := m.textTarget.Target
-			err := NudgePane(target, text)
+			err := NudgePane(target, text, false)
 			if err != nil {
 				m.message = fmt.Sprintf("Send failed: %v", err)
 			} else {
@@ -742,7 +746,9 @@ func (m *tuiModel) handleTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.scanner.Cache.Invalidate(target)
 			}
 			// Navigate tmux to the target pane
-			jumpToPane(target)
+			if errMsg := jumpToPane(target); errMsg != "" {
+				m.message = errMsg
+			}
 		}
 		m.mode = modeVerdictList
 		m.textTarget = nil
@@ -1061,7 +1067,7 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 	var nameCol, reasonCol string
 	if idx == m.cursor {
 		nameCol = selectedStyle.Render(padRight(
-			fmt.Sprintf("→ %s %s %s", arrow, iconText2(group), item.session), nameWidth))
+			fmt.Sprintf("→ %s %s %s", arrow, sessionIcon(group), item.session), nameWidth))
 		reasonCol = selectedStyle.Render(padRight(reason, reasonWidth))
 	} else {
 		nameCol = padRight(fmt.Sprintf("  %s %s %s", arrow, icon, item.session), nameWidth)
@@ -1129,8 +1135,8 @@ func (m *tuiModel) viewTextInput() string {
 	return b.String()
 }
 
-// iconText2 returns an icon string for a session group.
-func iconText2(g *sessionGroup) string {
+// sessionIcon returns an icon string for a session group.
+func sessionIcon(g *sessionGroup) string {
 	if g == nil {
 		return "·"
 	}
@@ -1195,7 +1201,7 @@ func (m *tuiModel) processAutoNudge() []string {
 		if !riskWithinThreshold(action.Risk, m.autoNudgeMaxRisk) {
 			continue
 		}
-		err := NudgePane(v.Target, action.Keys)
+		err := NudgePane(v.Target, action.Keys, action.Raw)
 		if err != nil {
 			messages = append(messages, fmt.Sprintf("auto-nudge %s failed: %v", v.Target, err))
 		} else {
@@ -1226,9 +1232,13 @@ func riskLabel(risk string) string {
 // jumpToPane switches the tmux client to the given pane target.
 // The target can be a session name ("mysession"), or a full pane target
 // ("mysession:0.1") to navigate to a specific window and pane.
-func jumpToPane(target string) {
+// Returns an error message if navigation fails, empty string on success.
+func jumpToPane(target string) string {
 	cmd := exec.Command("tmux", "switch-client", "-t", target)
-	_ = cmd.Run()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Sprintf("jump to %s failed: %v (%s)", target, err, strings.TrimSpace(string(out)))
+	}
+	return ""
 }
 
 // truncate cuts a string to at most maxLen characters.

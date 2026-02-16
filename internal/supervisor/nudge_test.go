@@ -23,7 +23,7 @@ func TestNudger_LiteralText(t *testing.T) {
 		Sleep: func(d time.Duration) {}, // no-op sleep for fast tests
 	}
 
-	err := nudger.NudgePane("session:0.0", "y")
+	err := nudger.NudgePane("session:0.0", "y", false)
 	if err != nil {
 		t.Fatalf("NudgePane() error: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestNudger_ControlSequence(t *testing.T) {
 		Sleep: func(d time.Duration) {},
 	}
 
-	err := nudger.NudgePane("session:0.0", "C-c")
+	err := nudger.NudgePane("session:0.0", "C-c", false)
 	if err != nil {
 		t.Fatalf("NudgePane() error: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestNudger_EnterRetryOnFailure(t *testing.T) {
 		Sleep: func(d time.Duration) {},
 	}
 
-	err := nudger.NudgePane("session:0.0", "yes")
+	err := nudger.NudgePane("session:0.0", "yes", false)
 	if err != nil {
 		t.Fatalf("NudgePane() should succeed on 3rd Enter attempt: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestNudger_EnterAllRetriesFail(t *testing.T) {
 		Sleep: func(d time.Duration) {},
 	}
 
-	err := nudger.NudgePane("session:0.0", "y")
+	err := nudger.NudgePane("session:0.0", "y", false)
 	if err == nil {
 		t.Fatal("expected error when all Enter retries fail")
 	}
@@ -135,12 +135,127 @@ func TestNudger_LiteralSendFails(t *testing.T) {
 		Sleep: func(d time.Duration) {},
 	}
 
-	err := nudger.NudgePane("session:0.0", "y")
+	err := nudger.NudgePane("session:0.0", "y", false)
 	if err == nil {
 		t.Fatal("expected error when literal send fails")
 	}
 	if !contains(err.Error(), "send literal keys") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestNudger_RawMode verifies that raw=true sends a single keypress
+// with no Escape or Enter appended (for TUIs like Claude Code).
+func TestNudger_RawMode(t *testing.T) {
+	var calls []sendKeysCall
+	nudger := &Nudger{
+		SendKeys: func(paneID, flag, keys string) error {
+			calls = append(calls, sendKeysCall{paneID, flag, keys})
+			return nil
+		},
+		Sleep: func(d time.Duration) {},
+	}
+
+	// "y" with raw=true should send just "y" — no Escape, no Enter
+	err := nudger.NudgePane("session:0.0", "y", true)
+	if err != nil {
+		t.Fatalf("NudgePane() error: %v", err)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 send-keys call for raw mode, got %d: %v", len(calls), calls)
+	}
+	if calls[0].flag != "" {
+		t.Errorf("raw mode should not use -l flag, got %q", calls[0].flag)
+	}
+	if calls[0].keys != "y" {
+		t.Errorf("got keys=%q, want %q", calls[0].keys, "y")
+	}
+}
+
+// TestNudger_RawMultiKeySequence verifies "Down Enter" is split into
+// two separate raw send-keys calls.
+func TestNudger_RawMultiKeySequence(t *testing.T) {
+	var calls []sendKeysCall
+	nudger := &Nudger{
+		SendKeys: func(paneID, flag, keys string) error {
+			calls = append(calls, sendKeysCall{paneID, flag, keys})
+			return nil
+		},
+		Sleep: func(d time.Duration) {},
+	}
+
+	err := nudger.NudgePane("session:0.0", "Down Enter", true)
+	if err != nil {
+		t.Fatalf("NudgePane() error: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 send-keys calls for 'Down Enter', got %d: %v", len(calls), calls)
+	}
+	if calls[0].keys != "Down" {
+		t.Errorf("call 1: got keys=%q, want %q", calls[0].keys, "Down")
+	}
+	if calls[1].keys != "Enter" {
+		t.Errorf("call 2: got keys=%q, want %q", calls[1].keys, "Enter")
+	}
+}
+
+// TestNudger_RawTripleKeySequence verifies "Down Down Enter" is sent as 3 calls.
+func TestNudger_RawTripleKeySequence(t *testing.T) {
+	var calls []sendKeysCall
+	nudger := &Nudger{
+		SendKeys: func(paneID, flag, keys string) error {
+			calls = append(calls, sendKeysCall{paneID, flag, keys})
+			return nil
+		},
+		Sleep: func(d time.Duration) {},
+	}
+
+	err := nudger.NudgePane("session:0.0", "Down Down Enter", true)
+	if err != nil {
+		t.Fatalf("NudgePane() error: %v", err)
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 send-keys calls, got %d: %v", len(calls), calls)
+	}
+	expected := []string{"Down", "Down", "Enter"}
+	for i, want := range expected {
+		if calls[i].keys != want {
+			t.Errorf("call %d: got keys=%q, want %q", i+1, calls[i].keys, want)
+		}
+	}
+}
+
+func TestSplitKeySequence(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"Enter", []string{"Enter"}},
+		{"Down Enter", []string{"Down", "Enter"}},
+		{"Down Down Enter", []string{"Down", "Down", "Enter"}},
+		{"C-c", []string{"C-c"}},
+		// Mixed: "y" is not a control sequence, so don't split
+		{"hello world", []string{"hello world"}},
+		{"Down y", []string{"Down y"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitKeySequence(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("splitKeySequence(%q) = %v (len %d), want %v (len %d)",
+					tt.input, got, len(got), tt.want, len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("splitKeySequence(%q)[%d] = %q, want %q",
+						tt.input, i, got[i], tt.want[i])
+				}
+			}
+		})
 	}
 }
 

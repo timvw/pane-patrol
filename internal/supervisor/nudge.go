@@ -1,14 +1,14 @@
 // Package supervisor provides the scan loop, TUI, and nudge transport
 // for the pane-supervisor command.
 //
-// ZFC compliance: This package never interprets pane content. It displays
-// LLM verdicts and executes user-confirmed actions via tmux send-keys.
-// All judgment calls (blocked detection, action suggestions) come from the LLM.
+// This package displays verdicts (from deterministic parsers or LLM) and
+// executes user-confirmed actions via tmux send-keys.
 package supervisor
 
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -51,11 +51,14 @@ func DefaultNudger() *Nudger {
 
 // NudgePane sends a keystroke sequence to a tmux pane.
 //
-// For literal text (e.g., "y", "yes", "continue"), keys are sent with -l flag
-// using the Gastown pattern: literal → debounce → Escape → Enter with retry.
-// For control sequences (e.g., "C-c", "Enter", "Escape"), keys are sent raw.
-func (n *Nudger) NudgePane(paneID, keys string) error {
-	if isControlSequence(keys) {
+// When raw is true, keys are sent as a single raw keypress — no Escape or
+// Enter appended. Use this for TUIs in raw mode (Claude Code, OpenCode, Codex).
+//
+// When raw is false (default), literal text (e.g., "yes", "continue") is sent
+// with -l flag using the Gastown pattern: literal → debounce → Escape → Enter.
+// Control sequences (e.g., "C-c", "Enter") are always sent raw regardless.
+func (n *Nudger) NudgePane(paneID, keys string, raw bool) error {
+	if raw || isControlSequence(keys) {
 		return n.nudgeRaw(paneID, keys)
 	}
 	return n.nudgeLiteral(paneID, keys)
@@ -100,17 +103,51 @@ func (n *Nudger) nudgeLiteral(paneID, keys string) error {
 }
 
 // nudgeRaw sends a control sequence (no literal mode, no Enter).
+// Supports space-separated key sequences (e.g., "Down Enter", "Down Down Enter")
+// where each token is sent as a separate raw keystroke with a small delay.
 func (n *Nudger) nudgeRaw(paneID, keys string) error {
 	sendKeys := n.SendKeys
 	if sendKeys == nil {
 		sendKeys = defaultSendKeys
 	}
-	return sendKeys(paneID, "", keys)
+	sleep := n.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+
+	// Split on spaces to support multi-key sequences like "Down Enter"
+	parts := splitKeySequence(keys)
+	for i, part := range parts {
+		if i > 0 {
+			sleep(100 * time.Millisecond)
+		}
+		if err := sendKeys(paneID, "", part); err != nil {
+			return fmt.Errorf("send raw key %q (step %d): %w", part, i+1, err)
+		}
+	}
+	return nil
+}
+
+// splitKeySequence splits a key string by spaces, but only if each token
+// looks like a control sequence. If any token is not a control sequence,
+// the entire string is treated as a single key (for backward compatibility).
+func splitKeySequence(keys string) []string {
+	parts := strings.Split(keys, " ")
+	if len(parts) <= 1 {
+		return []string{keys}
+	}
+	// Verify all parts are valid control sequences
+	for _, part := range parts {
+		if !isControlSequence(part) {
+			return []string{keys}
+		}
+	}
+	return parts
 }
 
 // NudgePane is a convenience function using the default tmux nudger.
-func NudgePane(paneID, keys string) error {
-	return DefaultNudger().NudgePane(paneID, keys)
+func NudgePane(paneID, keys string, raw bool) error {
+	return DefaultNudger().NudgePane(paneID, keys, raw)
 }
 
 // isControlSequence returns true if the keys string is a tmux control sequence
