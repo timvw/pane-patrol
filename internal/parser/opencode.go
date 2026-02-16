@@ -305,11 +305,41 @@ func (p *OpenCodeParser) parseQuestionDialog(content string) *Result {
 	// Count visible numbered options in the bottom portion to avoid stale matches.
 	optionCount := countNumberedOptions(lines)
 
-	actions := make([]model.Action, 0, optionCount+1)
+	// Detect multi-select: options have [✓]/[ ] checkbox prefixes.
+	// In multi-select, number keys toggle checkboxes (not select-and-submit),
+	// and Enter submits the selection.
+	isMultiSelect := false
+	for _, line := range lines {
+		stripped := stripDialogPrefix(strings.TrimSpace(line))
+		if isNumberedOption(stripped) && (strings.Contains(stripped, "[ ]") || strings.Contains(stripped, "[✓]")) {
+			isMultiSelect = true
+			break
+		}
+	}
+
+	optionLabels := extractOptionLabels(lines)
+
+	actions := make([]model.Action, 0, optionCount+2)
 	for i := 1; i <= optionCount && i <= 9; i++ {
+		label := fmt.Sprintf("select option %d", i)
+		if isMultiSelect {
+			label = fmt.Sprintf("toggle option %d", i)
+		}
+		if i-1 < len(optionLabels) && optionLabels[i-1] != "" {
+			label = optionLabels[i-1]
+		}
 		actions = append(actions, model.Action{
 			Keys:  fmt.Sprintf("%d", i),
-			Label: fmt.Sprintf("select option %d", i),
+			Label: label,
+			Risk:  "low",
+			Raw:   true,
+		})
+	}
+	// Multi-select: add explicit Submit action (Enter sends selection).
+	if isMultiSelect {
+		actions = append(actions, model.Action{
+			Keys:  "Enter",
+			Label: "submit selection",
 			Risk:  "low",
 			Raw:   true,
 		})
@@ -321,13 +351,20 @@ func (p *OpenCodeParser) parseQuestionDialog(content string) *Result {
 		Raw:   true,
 	})
 
+	// For multi-select, recommend Submit (after all toggle actions).
+	// For single-select, recommend first option.
+	recommended := 0
+	if isMultiSelect {
+		recommended = optionCount // index of the Submit action
+	}
+
 	return &Result{
 		Agent:       "opencode",
 		Blocked:     true,
 		Reason:      "question dialog waiting for answer",
 		WaitingFor:  waitingFor,
 		Actions:     actions,
-		Recommended: 0,
+		Recommended: recommended,
 		Reasoning:   "deterministic parser: OpenCode question dialog detected (↑↓ select footer)",
 	}
 }

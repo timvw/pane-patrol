@@ -1131,16 +1131,19 @@ func TestClaude_PermissionScrolledOff(t *testing.T) {
 func TestOpenCode_QuestionDialogSingleQuestion(t *testing.T) {
 	// OpenCode question tool: single question with numbered options.
 	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	// Real content has ┃ border prefix on every dialog line (SplitBorder component).
 	content := `
-  Which database should I use?
-
-  1. PostgreSQL
-     Best for complex queries
-  2. SQLite
-     Good for embedded use
-  3. Type your own answer
-
-  ↑↓ select  enter submit  esc dismiss
+  ┃
+  ┃  Which database should I use?
+  ┃
+  ┃  1. PostgreSQL
+  ┃     Best for complex queries
+  ┃  2. SQLite
+  ┃     Good for embedded use
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+  ┃
 `
 	p := &OpenCodeParser{}
 	result := p.Parse(content, []string{"opencode"})
@@ -1169,20 +1172,25 @@ func TestOpenCode_QuestionDialogSingleQuestion(t *testing.T) {
 	if lastAction.Keys != "Escape" {
 		t.Errorf("last action keys: got %q, want %q", lastAction.Keys, "Escape")
 	}
+	// WaitingFor should contain option descriptions (stripped of ┃ prefix)
+	if !strings.Contains(result.WaitingFor, "Best for complex queries") {
+		t.Errorf("WaitingFor should contain description, got: %q", result.WaitingFor)
+	}
 }
 
 func TestOpenCode_QuestionDialogMultiQuestion(t *testing.T) {
 	// Multi-question form with tab-style headers.
 	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
 	content := `
-  Database      Config      Confirm
-
-  Which database should I use?
-
-  1. PostgreSQL
-  2. SQLite
-
-  ⇆ tab  ↑↓ select  enter confirm  esc dismiss
+  ┃   Database      Config      Confirm
+  ┃
+  ┃  Which database should I use?
+  ┃
+  ┃  1. PostgreSQL
+  ┃  2. SQLite
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss
+  ┃
 `
 	p := &OpenCodeParser{}
 	result := p.Parse(content, []string{"opencode"})
@@ -1201,12 +1209,12 @@ func TestOpenCode_QuestionNotOverriddenByIdlePrompt(t *testing.T) {
 	// Question footer "↑↓ select" should prevent idle detection even
 	// when ">" prompt is visible in the bottom lines.
 	content := `
-  Pick a framework
-
-  1. React
-  2. Vue
-
-  ↑↓ select  enter submit  esc dismiss
+  ┃  Pick a framework
+  ┃
+  ┃  1. React
+  ┃  2. Vue
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
 
   >
 `
@@ -1225,12 +1233,12 @@ func TestOpenCode_StaleQuestionInScrollback(t *testing.T) {
 	// Stale question dialog text in scrollback, agent now idle at prompt.
 	// The question footer has scrolled above the bottom 8 lines window.
 	content := `
-  Pick a framework
-
-  1. React
-  2. Vue
-
-  ↑↓ select  enter submit  esc dismiss
+  ┃  Pick a framework
+  ┃
+  ┃  1. React
+  ┃  2. Vue
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
 
   Selected React. Proceeding with React setup.
   Installing dependencies...
@@ -1259,14 +1267,15 @@ func TestOpenCode_QuestionDialogMultiSelect(t *testing.T) {
 	// Multi-select question with [✓]/[ ] prefixes.
 	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
 	content := `
-  Which features do you need? (select all that apply)
-
-  1. [✓] Authentication
-  2. [ ] Database
-  3. [ ] API routes
-  4. Type your own answer
-
-  ↑↓ select  enter toggle  esc dismiss
+  ┃  Which features do you need? (select all that apply)
+  ┃
+  ┃  1. [✓] Authentication
+  ┃  2. [ ] Database
+  ┃  3. [ ] API routes
+  ┃  4. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter toggle  esc dismiss
+  ┃
 `
 	p := &OpenCodeParser{}
 	result := p.Parse(content, []string{"opencode"})
@@ -1413,16 +1422,17 @@ func TestCodex_QuestionDialogFreeform(t *testing.T) {
 // --- Shared Helper Tests ---
 
 func TestExtractQuestionSummary(t *testing.T) {
+	// Realistic OpenCode content with ┃ border prefix
 	lines := strings.Split(`
-  Which database should I use?
-
-  1. PostgreSQL
-     Best for complex queries
-  2. SQLite
-     Good for embedded use
-  3. Type your own answer
-
-  ↑↓ select  enter submit  esc dismiss
+  ┃  Which database should I use?
+  ┃
+  ┃  1. PostgreSQL
+  ┃     Best for complex queries
+  ┃  2. SQLite
+  ┃     Good for embedded use
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
 `, "\n")
 	summary := extractQuestionSummary(lines)
 	if !strings.Contains(summary, "database") {
@@ -1434,19 +1444,199 @@ func TestExtractQuestionSummary(t *testing.T) {
 	if !strings.Contains(summary, "2. SQLite") {
 		t.Errorf("summary should contain second option, got: %q", summary)
 	}
+	// Description lines should be included (indented under options)
+	if !strings.Contains(summary, "Best for complex queries") {
+		t.Errorf("summary should contain option description, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Good for embedded use") {
+		t.Errorf("summary should contain second option description, got: %q", summary)
+	}
+	// ┃ border should be stripped from output
+	if strings.Contains(summary, "┃") {
+		t.Errorf("summary should not contain ┃ border, got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryCodexStyle(t *testing.T) {
+	// Codex renders options with "› " cursor prefix
+	lines := strings.Split(`
+  What framework do you want?
+
+  › 1. React
+    Build interactive UIs
+    2. Vue
+    Progressive framework
+    3. None of the above
+
+  enter to submit answer  esc to interrupt
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if !strings.Contains(summary, "framework") {
+		t.Errorf("summary should contain question text, got: %q", summary)
+	}
+	if !strings.Contains(summary, "1. React") {
+		t.Errorf("summary should contain first option (with or without ›), got: %q", summary)
+	}
+	if !strings.Contains(summary, "2. Vue") {
+		t.Errorf("summary should contain second option, got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryNoOptions(t *testing.T) {
+	lines := strings.Split(`
+  Some random content
+  No numbered options here
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if summary != "question dialog" {
+		t.Errorf("expected fallback 'question dialog', got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryStopsAtFooter(t *testing.T) {
+	// Descriptions should not cross into footer lines.
+	// Uses ┃ border prefix like real OpenCode content.
+	lines := strings.Split(`
+  ┃  Pick a color
+  ┃
+  ┃  1. Red
+  ┃     Warm color
+  ┃  2. Blue
+  ┃     Cool color
+  ┃  ↑↓ select  enter confirm  esc dismiss
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	// Footer should NOT appear in the summary
+	if strings.Contains(summary, "↑↓ select") {
+		t.Errorf("summary should not contain footer, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Warm color") {
+		t.Errorf("summary should contain description, got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryRealisticMultiSelect(t *testing.T) {
+	// Realistic multi-select question from a live OpenCode session.
+	// Every dialog line has ┃ border prefix + multi-select [ ] checkboxes.
+	lines := strings.Split(`
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Now that superpowers is installed, what would you like to do next? (select all that apply)
+  ┃
+  ┃  1. [ ] Configure wt for multi-repo
+  ┃     Set up the custom pattern on both machines for cross-repo task grouping
+  ┃  2. [ ] Add wt hooks
+  ┃     Configure post_create/post_checkout hooks for automatic dependency installation
+  ┃  3. [ ] Update global AGENTS.md
+  ┃     Align ~/.config/opencode/AGENTS.md to reference superpowers
+  ┃  4. [ ] Test the installation
+  ┃     Verify skills are discoverable and the wt integration works
+  ┃  5. [ ] Something else
+  ┃     I have a different task in mind
+  ┃  6. [ ] Type your own answer
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+  ┃
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if !strings.Contains(summary, "superpowers") {
+		t.Errorf("summary should contain question text, got: %q", summary)
+	}
+	if !strings.Contains(summary, "1. [ ] Configure wt") {
+		t.Errorf("summary should contain first option, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Set up the custom pattern") {
+		t.Errorf("summary should contain first option description, got: %q", summary)
+	}
+	if !strings.Contains(summary, "4. [ ] Test the installation") {
+		t.Errorf("summary should contain fourth option, got: %q", summary)
+	}
+	// ┃ border should be stripped
+	if strings.Contains(summary, "┃") {
+		t.Errorf("summary should not contain ┃ border, got: %q", summary)
+	}
+	// Footer should not be included
+	if strings.Contains(summary, "⇆ tab") {
+		t.Errorf("summary should not contain footer, got: %q", summary)
+	}
+}
+
+func TestIsFooterLine(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"⇆ select  enter confirm", true},
+		{"↑↓ select  enter confirm  esc dismiss", true},
+		{"⇆ tab  ↑↓ select", true},
+		{"esc dismiss", true},
+		{"enter confirm", true},
+		{"enter to submit answer", true},
+		{"enter to submit all", true},
+		{"esc to interrupt", true},
+		{"tab to add notes", true},
+		{"1. PostgreSQL", false},
+		{"Best for complex queries", false},
+		{"Which database?", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isFooterLine(tt.input)
+			if got != tt.want {
+				t.Errorf("isFooterLine(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripDialogPrefix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"┃  1. PostgreSQL", "1. PostgreSQL"},
+		{"┃     Description text", "Description text"},
+		{"┃  ↑↓ select  enter confirm", "↑↓ select  enter confirm"},
+		{"› 1. Jest", "1. Jest"},
+		{"›  2. Vitest", "2. Vitest"},
+		{"1. Plain option", "1. Plain option"},
+		{"Just text", "Just text"},
+		{"", ""},
+		{"┃  ┃  double border", "double border"}, // unlikely but handled
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := stripDialogPrefix(tt.input)
+			if got != tt.want {
+				t.Errorf("stripDialogPrefix(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestCountNumberedOptions(t *testing.T) {
+	// With ┃ border prefix (realistic OpenCode content)
 	lines := strings.Split(`
-  1. Option A
-     Description
-  2. Option B
-     Description
-  3. Type your own answer
+  ┃  1. Option A
+  ┃     Description
+  ┃  2. Option B
+  ┃     Description
+  ┃  3. Type your own answer
 `, "\n")
 	count := countNumberedOptions(lines)
 	if count != 3 {
 		t.Errorf("expected 3 options, got %d", count)
+	}
+
+	// Without border prefix (plain content)
+	plain := strings.Split(`
+  1. Option A
+  2. Option B
+`, "\n")
+	count2 := countNumberedOptions(plain)
+	if count2 != 2 {
+		t.Errorf("expected 2 options for plain content, got %d", count2)
 	}
 }
 

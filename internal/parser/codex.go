@@ -296,22 +296,21 @@ func (p *CodexParser) parseQuestionDialog(content string) *Result {
 	waitingFor := extractQuestionSummary(lines)
 
 	// Count numbered options. Codex renders them as "› 1. Label" (selected)
-	// or "  1. Label" (unselected). We strip leading "› " before checking.
-	optionCount := 0
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		// Strip the Codex selection cursor "› " prefix
-		stripped := strings.TrimLeft(trimmed, "› ")
-		if isNumberedOption(stripped) {
-			optionCount++
-		}
-	}
+	// or "  1. Label" (unselected). countNumberedOptions strips known
+	// border/cursor prefixes (┃, ›) via stripDialogPrefix.
+	optionCount := countNumberedOptions(lines)
+
+	optionLabels := extractOptionLabels(lines)
 
 	actions := make([]model.Action, 0, optionCount+2)
 	for i := 1; i <= optionCount && i <= 9; i++ {
+		label := fmt.Sprintf("select option %d", i)
+		if i-1 < len(optionLabels) && optionLabels[i-1] != "" {
+			label = optionLabels[i-1]
+		}
 		actions = append(actions, model.Action{
 			Keys:  fmt.Sprintf("%d", i),
-			Label: fmt.Sprintf("select option %d", i),
+			Label: label,
 			Risk:  "low",
 			Raw:   true,
 		})

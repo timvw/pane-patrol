@@ -101,28 +101,78 @@ func isNumberedOption(trimmed string) bool {
 	return trimmed[0] >= '1' && trimmed[0] <= '9' && trimmed[1] == '.'
 }
 
+// stripDialogPrefix removes known TUI border/cursor characters from the
+// start of a trimmed line. This handles:
+//   - OpenCode: "┃" (U+2503) thick vertical border from SplitBorder component
+//   - Codex: "›" (U+203A) selection cursor
+//   - Multi-select: "[✓]" or "[ ]" checkbox prefixes after the option number
+//
+// The result is re-trimmed so callers get clean content for matching.
+func stripDialogPrefix(trimmed string) string {
+	s := trimmed
+	// Strip OpenCode border "┃" and Codex cursor "›"
+	for {
+		if strings.HasPrefix(s, "┃") {
+			s = strings.TrimPrefix(s, "┃")
+			s = strings.TrimLeft(s, " ")
+			continue
+		}
+		if strings.HasPrefix(s, "›") {
+			s = strings.TrimPrefix(s, "›")
+			s = strings.TrimLeft(s, " ")
+			continue
+		}
+		break
+	}
+	return s
+}
+
 // countNumberedOptions counts lines matching the "N. label" pattern in the
-// provided lines slice. Used to determine how many options are visible.
+// provided lines slice. Strips known TUI border/cursor prefixes (┃, ›)
+// before matching. Used to determine how many options are visible.
 func countNumberedOptions(lines []string) int {
 	count := 0
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if isNumberedOption(trimmed) {
+		stripped := stripDialogPrefix(trimmed)
+		if isNumberedOption(stripped) {
 			count++
 		}
 	}
 	return count
 }
 
+// extractOptionLabels returns the text after "N. " for each numbered option
+// line found in the provided lines. Border/cursor prefixes (┃, ›) are
+// stripped. The returned slice is ordered by appearance, up to 9 entries.
+// Example: "┃  3. [✓] Authentication" → "[✓] Authentication"
+func extractOptionLabels(lines []string) []string {
+	var labels []string
+	for _, line := range lines {
+		stripped := stripDialogPrefix(strings.TrimSpace(line))
+		if isNumberedOption(stripped) {
+			// Skip past "N. " (3 chars)
+			label := strings.TrimSpace(stripped[3:])
+			labels = append(labels, label)
+			if len(labels) >= 9 {
+				break
+			}
+		}
+	}
+	return labels
+}
+
 // extractQuestionSummary extracts question text and visible options from
 // a question dialog. Looks for the question text above the first numbered
-// option, then collects the option labels.
+// option, then collects option labels with their description lines.
 func extractQuestionSummary(lines []string) string {
-	// Find the first numbered option line
+	// Find the first numbered option line. Strip known border/cursor
+	// prefixes (┃ from OpenCode, › from Codex) before checking.
 	firstOptIdx := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if isNumberedOption(trimmed) {
+		stripped := stripDialogPrefix(trimmed)
+		if isNumberedOption(stripped) {
 			firstOptIdx = i
 			break
 		}
@@ -131,15 +181,17 @@ func extractQuestionSummary(lines []string) string {
 		return "question dialog"
 	}
 
-	// Collect question text from lines above the first option
+	// Collect question text from lines above the first option.
+	// Strip border prefixes so the output is clean.
 	var questionLines []string
 	for i := firstOptIdx - 1; i >= 0 && len(questionLines) < 4; i-- {
 		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" && len(questionLines) > 0 {
+		stripped := stripDialogPrefix(trimmed)
+		if stripped == "" && len(questionLines) > 0 {
 			break
 		}
-		if trimmed != "" {
-			questionLines = append(questionLines, trimmed)
+		if stripped != "" {
+			questionLines = append(questionLines, stripped)
 		}
 	}
 	// Reverse (collected bottom-up)
@@ -147,17 +199,40 @@ func extractQuestionSummary(lines []string) string {
 		questionLines[i], questionLines[j] = questionLines[j], questionLines[i]
 	}
 
-	// Collect option labels (up to 6 to keep WaitingFor concise)
-	var optionLabels []string
-	for i := firstOptIdx; i < len(lines) && len(optionLabels) < 6; i++ {
+	// Collect option labels with their description lines.
+	// Each numbered option ("N. label") may be followed by indented description
+	// lines before the next numbered option or footer. We collect up to 6
+	// options with up to 2 description lines each. Border/cursor prefixes
+	// are stripped so the output is clean.
+	var optionLines []string
+	optCount := 0
+	for i := firstOptIdx; i < len(lines) && optCount < 9; i++ {
 		trimmed := strings.TrimSpace(lines[i])
-		if isNumberedOption(trimmed) {
-			optionLabels = append(optionLabels, trimmed)
+		stripped := stripDialogPrefix(trimmed)
+		if isNumberedOption(stripped) {
+			optionLines = append(optionLines, stripped)
+			optCount++
+			// Collect description lines below this option (up to 2)
+			descCount := 0
+			for j := i + 1; j < len(lines) && descCount < 2; j++ {
+				dt := strings.TrimSpace(lines[j])
+				ds := stripDialogPrefix(dt)
+				if ds == "" || isNumberedOption(ds) {
+					break
+				}
+				// Skip footer lines
+				if isFooterLine(ds) {
+					break
+				}
+				optionLines = append(optionLines, "  "+ds)
+				descCount++
+				i = j // advance outer loop past description
+			}
 		}
 	}
 
 	question := strings.Join(questionLines, "\n")
-	options := strings.Join(optionLabels, "\n")
+	options := strings.Join(optionLines, "\n")
 	if question != "" && options != "" {
 		return question + "\n" + options
 	}
@@ -168,6 +243,35 @@ func extractQuestionSummary(lines []string) string {
 		return options
 	}
 	return "question dialog"
+}
+
+// isFooterLine returns true if the line looks like a dialog footer (keyboard hints).
+// Used by extractQuestionSummary to stop collecting description lines.
+func isFooterLine(trimmed string) bool {
+	// OpenCode footers
+	if strings.Contains(trimmed, "⇆ select") || strings.Contains(trimmed, "⇆ tab") {
+		return true
+	}
+	if strings.Contains(trimmed, "↑↓") && strings.Contains(trimmed, "select") {
+		return true
+	}
+	if strings.Contains(trimmed, "esc dismiss") {
+		return true
+	}
+	if strings.Contains(trimmed, "enter confirm") {
+		return true
+	}
+	// Codex footers
+	if strings.Contains(trimmed, "enter to submit") {
+		return true
+	}
+	if strings.Contains(trimmed, "esc to interrupt") {
+		return true
+	}
+	if strings.Contains(trimmed, "tab to add notes") {
+		return true
+	}
+	return false
 }
 
 // progressVerbs are tool-specific action words used by Claude Code in its
