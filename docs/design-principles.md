@@ -1,47 +1,46 @@
 # Design Principles
 
-## ZFC: Zero False Commands
+## Hybrid architecture: Deterministic parsers + LLM fallback
 
-pane-patrol follows the ZFC principle, inspired by [Gastown](https://github.com/steveyegge/gastown).
+pane-patrol uses a two-tier evaluation system:
 
-**Core tenet: Go transports. AI decides.**
+### Tier 1: Deterministic parsers for known agents
 
-### What Go code does
+For agents whose TUI is known (OpenCode, Claude Code, Codex), Go code parses
+the terminal output directly. This is **protocol parsing**, not heuristic
+classification — we know exactly what strings these agents render because we
+read their source code.
 
-- Captures pane content from the terminal multiplexer
-- Sends that content to an LLM
-- Formats and outputs the LLM's verdict as JSON
-- Provides transport (HTTP, tmux/zellij CLI, stdio)
+Benefits:
+- **Instant**: No API call, no latency
+- **Free**: No token costs
+- **100% accurate**: Exact string matching against known UI patterns
+- **Correct actions**: Produces the right keystrokes with proper send mode
+  (raw for TUIs in raw mode, literal for readline-based shells)
 
-### What Go code never does
+The parsers live in `internal/parser/` with one implementation per agent:
+- `opencode.go` — Permission dialogs, Build/Plan indicators, spinner detection
+- `claude.go` — Permission dialogs, edit approvals, auto-resolve countdowns
+- `codex.go` — Exec/edit/network/MCP approvals, Working indicator
 
-- Interprets pane content
-- Decides whether a pane is "blocked" or "not blocked"
-- Determines whether a process is an "agent" or not
-- Applies heuristics, regex, or pattern matching to classify state
-- Makes threshold-based judgments (e.g., "idle > 10 min = stuck")
+### Tier 2: LLM fallback for unknown agents
 
-### What the LLM decides
+If no parser recognizes the pane content, the system falls back to LLM
+evaluation. The LLM handles agents we haven't written parsers for (Cursor,
+Gemini CLI, AMP, Aider, etc.) and non-agent panes.
 
-The LLM makes **all** judgment calls:
-
+The LLM makes judgment calls:
 - Is this an AI coding agent? Which one?
 - Is this session blocked / waiting for human input?
 - Why is it blocked? What kind of interaction is required?
 
-### Acceptable exceptions
+### What stays in Go code
 
-Some decisions are inherently mechanical and not judgment calls. These are
-acceptable in Go code:
-
-- **User-provided filters**: `--filter "^wt-"` is a user decision, not a
-  code decision. Go applies it as instructed.
-- **Multiplexer detection**: Checking `$TMUX` / `$ZELLIJ` env vars to pick
-  the right backend is infrastructure plumbing, not content interpretation.
-- **API routing**: Choosing the right SDK (Anthropic vs OpenAI) based on
-  `--provider` is configuration, not judgment.
-- **Error handling**: Detecting that a pane doesn't exist or an API call
-  failed is transport-level.
+- **Transport**: Capturing panes, calling APIs, formatting output
+- **Protocol parsing**: Recognizing known agent TUI patterns
+- **User-specified filtering**: Regex on session names
+- **Error handling**: Detecting missing panes, API failures
+- **Configuration resolution**: Provider, model, API key selection
 
 ## Observable reality as source of truth
 
@@ -67,10 +66,10 @@ The TTL ensures periodic re-evaluation even when content is static.
 Each command does one thing:
 
 | Command   | Responsibility                                     |
-|-----------|----------------------------------------------------|
-| `capture` | Transport: multiplexer -> stdout                   |
+|-----------|-----------------------------------------------------|
+| `capture` | Transport: multiplexer -> stdout                    |
 | `list`    | Transport: multiplexer -> pane targets              |
-| `check`   | Transport: multiplexer -> LLM -> JSON verdict      |
+| `check`   | Parser -> LLM fallback -> JSON verdict              |
 | `scan`    | Orchestration: list -> check (N panes) -> JSON array|
 | `watch`   | Orchestration: scan on interval -> event stream     |
 
@@ -78,17 +77,19 @@ Higher-level commands compose lower-level ones. Each is independently useful.
 
 ## Feedback loop design
 
-Every verdict includes `reasoning` — the LLM's step-by-step analysis. This
-enables:
+Every verdict includes `reasoning` — either the parser's deterministic
+explanation or the LLM's step-by-step analysis. This enables:
 
-- **Human review**: Operators can audit whether the LLM's judgment was correct.
-- **Prompt improvement**: Patterns of incorrect verdicts inform prompt refinements.
+- **Human review**: Operators can audit whether the verdict was correct.
+- **Prompt improvement**: Patterns of incorrect LLM verdicts inform prompt
+  refinements.
 - **Training data**: Verdict + pane content pairs (via `--verbose`) can be
   collected for evaluation.
+- **Parser extension**: When a new agent becomes common, a deterministic
+  parser can be written from the agent's source code.
 
-The prompts are externalized as markdown files (`internal/evaluator/prompts/`)
-and embedded at compile time via `//go:embed`. This makes them easy to review,
-diff, and iterate on without touching Go code.
+The LLM prompts are externalized as markdown files
+(`internal/evaluator/prompts/`) and embedded at compile time via `//go:embed`.
 
 ## Provider agnosticism
 
@@ -96,3 +97,19 @@ The tool supports multiple LLM providers (Anthropic, OpenAI-compatible) and
 multiple terminal multiplexers (tmux, zellij). Swapping either should not
 change the evaluation logic or output format. The `Evaluator` and `Multiplexer`
 interfaces enforce this separation.
+
+## Nudge modes
+
+Actions include a `raw` flag that controls how keystrokes are sent:
+
+- **Raw mode** (`raw: true`): Single keypress, no Escape or Enter appended.
+  Used for TUIs that run in raw mode (Claude Code, OpenCode, Codex) where
+  each keypress is processed immediately.
+- **Literal mode** (`raw: false`, default): The Gastown pattern — literal
+  text with `-l` flag, then Escape (exit vim INSERT if applicable), then
+  Enter with retry. Used for readline-based shells and text inputs.
+- **Multi-key sequences** (e.g., `"Down Enter"`): Space-separated control
+  sequences are sent as individual raw keystrokes with 100ms delays.
+
+Deterministic parsers always set the correct mode. LLM-generated actions
+default to literal mode for backward compatibility.
