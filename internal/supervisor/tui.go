@@ -102,6 +102,11 @@ type scanResultMsg struct {
 
 type tickMsg struct{}
 
+// nudgeResultMsg is sent when async auto-nudge completes.
+type nudgeResultMsg struct {
+	messages []string // status messages describing what was sent
+}
+
 // TUI runs the interactive supervisor.
 type TUI struct {
 	Scanner          *Scanner
@@ -387,13 +392,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.totalCacheCreationTokens += v.Usage.CacheCreationInputTokens
 			}
 
-			// Auto-nudge blocked panes (only when not focused on actions/typing)
-			if m.focus != panelActions && m.mode != modeTextInput {
-				if msgs := m.processAutoNudge(); len(msgs) > 0 {
-					m.message = strings.Join(msgs, " | ")
-				}
-			}
-
 			m.rebuildGroups()
 			if m.cursor >= len(m.items) {
 				m.cursor = 0
@@ -404,9 +402,21 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.clampActionCursor()
 		}
-		// Schedule next auto-refresh
+		// Schedule next auto-refresh and auto-nudge (both async).
+		var cmds []tea.Cmd
 		if cmd := m.scheduleTick(); cmd != nil {
-			return m, cmd
+			cmds = append(cmds, cmd)
+		}
+		if m.focus != panelActions && m.mode != modeTextInput {
+			if cmd := m.autoNudgeCmd(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		return m, tea.Batch(cmds...)
+
+	case nudgeResultMsg:
+		if len(msg.messages) > 0 {
+			m.message = strings.Join(msg.messages, " | ")
 		}
 		return m, nil
 
@@ -1188,15 +1198,27 @@ func riskWithinThreshold(actionRisk, maxRisk string) bool {
 	return riskOrdinal(actionRisk) > 0 && riskOrdinal(actionRisk) <= riskOrdinal(maxRisk)
 }
 
-// processAutoNudge sends the recommended action for each blocked pane whose
-// recommended action is within the configured risk threshold. Returns a list
-// of status messages describing what was sent.
-func (m *tuiModel) processAutoNudge() []string {
+// nudgeTask describes a single auto-nudge action to perform asynchronously.
+type nudgeTask struct {
+	target string
+	keys   string
+	raw    bool
+	label  string
+}
+
+// autoNudgeCmd returns a tea.Cmd that sends the recommended action for each
+// blocked pane whose recommended action is within the configured risk
+// threshold. The actual tmux send-keys calls (which include subprocess
+// invocations and deliberate sleeps) run in a goroutine so they don't block
+// the TUI Update loop.
+func (m *tuiModel) autoNudgeCmd() tea.Cmd {
 	if !m.autoNudge {
 		return nil
 	}
 
-	var messages []string
+	// Collect nudge tasks and invalidate cache eagerly (cache is safe to
+	// mutate here because Update runs on a single goroutine).
+	var tasks []nudgeTask
 	for _, v := range m.verdicts {
 		if v.Agent == "not_an_agent" || v.Agent == "error" || !v.Blocked {
 			continue
@@ -1208,18 +1230,34 @@ func (m *tuiModel) processAutoNudge() []string {
 		if !riskWithinThreshold(action.Risk, m.autoNudgeMaxRisk) {
 			continue
 		}
-		err := NudgePane(v.Target, action.Keys, action.Raw)
-		if err != nil {
-			messages = append(messages, fmt.Sprintf("auto-nudge %s failed: %v", v.Target, err))
-		} else {
-			messages = append(messages, fmt.Sprintf("auto-nudged '%s' to %s (%s)", action.Keys, v.Target, action.Label))
-		}
+		tasks = append(tasks, nudgeTask{
+			target: v.Target,
+			keys:   action.Keys,
+			raw:    action.Raw,
+			label:  action.Label,
+		})
 		// Invalidate cache so the next scan re-evaluates this pane
 		if m.scanner.Cache != nil {
 			m.scanner.Cache.Invalidate(v.Target)
 		}
 	}
-	return messages
+
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	return func() tea.Msg {
+		var messages []string
+		for _, t := range tasks {
+			err := NudgePane(t.target, t.keys, t.raw)
+			if err != nil {
+				messages = append(messages, fmt.Sprintf("auto-nudge %s failed: %v", t.target, err))
+			} else {
+				messages = append(messages, fmt.Sprintf("auto-nudged '%s' to %s (%s)", t.keys, t.target, t.label))
+			}
+		}
+		return nudgeResultMsg{messages: messages}
+	}
 }
 
 // riskLabel returns a styled risk string.
