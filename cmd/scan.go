@@ -51,6 +51,9 @@ matching a regex pattern. Use --parallel to evaluate concurrently.`,
 
 		// Apply exclude_sessions from config file
 		cfg, cfgErr := config.Load()
+		if cfgErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to load config: %v\n", cfgErr)
+		}
 		if cfgErr == nil && len(cfg.ExcludeSessions) > 0 {
 			filtered := make([]model.Pane, 0, len(panes))
 			for _, p := range panes {
@@ -160,7 +163,7 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 			Reasoning:   parsed.Reasoning,
 			Actions:     parsed.Actions,
 			Recommended: parsed.Recommended,
-			EvalSource:  "parser",
+			EvalSource:  model.EvalSourceParser,
 			Model:       "deterministic",
 			Provider:    "parser",
 			EvaluatedAt: time.Now().UTC(),
@@ -195,7 +198,7 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 		Actions:     llmVerdict.Actions,
 		Recommended: llmVerdict.Recommended,
 		Usage:       llmVerdict.Usage,
-		EvalSource:  "llm",
+		EvalSource:  model.EvalSourceLLM,
 		Model:       eval.Model(),
 		Provider:    eval.Provider(),
 		EvaluatedAt: time.Now().UTC(),

@@ -29,7 +29,7 @@ code and document the source file + line numbers in the parser's doc comment.
 See [docs/design-principles.md](docs/design-principles.md) for the full
 architecture specification.
 
-## Building
+## Building and quality checks
 
 ```bash
 # Build
@@ -38,8 +38,24 @@ just build
 # Run tests
 just test
 
+# Run linter
+just lint
+
 # Build for all platforms
 just build-all
+```
+
+**Before committing**, always run lint, test, and build:
+
+```bash
+just lint && just test && just build
+```
+
+A pre-commit hook (`.pre-commit-config.yaml`) enforces this automatically.
+Install it with:
+
+```bash
+pre-commit install
 ```
 
 ## Testing

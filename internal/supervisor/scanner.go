@@ -120,7 +120,7 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 					Agent:       "error",
 					Blocked:     false,
 					Reason:      fmt.Sprintf("evaluation failed: %v", err),
-					EvalSource:  "error",
+					EvalSource:  model.EvalSourceError,
 					Model:       evalModel,
 					Provider:    evalProvider,
 					EvaluatedAt: time.Now().UTC(),
@@ -128,7 +128,7 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 				}
 				return
 			}
-			if v.EvalSource == "cache" {
+			if v.EvalSource == model.EvalSourceCache {
 				atomic.AddInt64(&cacheHits, 1)
 			}
 			verdicts[idx] = *v
@@ -198,7 +198,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 	if s.Cache != nil {
 		if cached, ok := s.Cache.Lookup(pane.Target, content); ok {
 			cached.DurationMs = time.Since(start).Milliseconds()
-			cached.EvalSource = "cache"
+			cached.EvalSource = model.EvalSourceCache
 			// Zero out usage for cache hits — no LLM call was made
 			cached.Usage = model.TokenUsage{}
 
@@ -241,7 +241,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 				Actions:     parsed.Actions,
 				Recommended: parsed.Recommended,
 				Usage:       model.TokenUsage{}, // No LLM call
-				EvalSource:  "parser",
+				EvalSource:  model.EvalSourceParser,
 				Model:       "deterministic",
 				Provider:    "parser",
 				EvaluatedAt: time.Now().UTC(),
@@ -312,7 +312,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		Actions:     llmVerdict.Actions,
 		Recommended: llmVerdict.Recommended,
 		Usage:       llmVerdict.Usage,
-		EvalSource:  "llm",
+		EvalSource:  model.EvalSourceLLM,
 		Model:       s.Evaluator.Model(),
 		Provider:    s.Evaluator.Provider(),
 		EvaluatedAt: time.Now().UTC(),

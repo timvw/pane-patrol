@@ -636,8 +636,8 @@ func TestOpenCode_StaleSpinnerInScrollback(t *testing.T) {
 
 func TestCodex_StaleWorkingInScrollback(t *testing.T) {
 	// Stale "Working" from a previous turn visible in scrollback, with enough
-	// output below it that the stale indicators are pushed above the bottom 8
-	// non-empty lines window.
+	// output below it that the stale indicators are pushed above the bottom
+	// non-empty lines window (see bottomLines const in parser.go).
 	content := `
   Working
 
@@ -668,8 +668,8 @@ func TestCodex_StaleWorkingInScrollback(t *testing.T) {
 
 func TestCodex_StaleApprovalAboveIdle(t *testing.T) {
 	// Stale "✔ You approved codex to run" from a previous action visible in
-	// scrollback, with enough output below to push it above the bottom 8
-	// non-empty lines window.
+	// scrollback, with enough output below to push it above the bottom
+	// non-empty lines window (see bottomLines const in parser.go).
 	content := `
   ✔ You approved codex to run git status
 
@@ -901,7 +901,8 @@ func TestCodex_StaleExecApprovalInScrollback(t *testing.T) {
 func TestOpenCode_StalePermissionInScrollback(t *testing.T) {
 	// OpenCode previously showed a permission dialog, it was approved, and
 	// the agent has returned to idle. The dialog text is in scrollback with
-	// enough output below to push dialog indicators above the bottom 8 lines.
+	// enough output below to push dialog indicators above the bottom
+	// non-empty lines window (see bottomLines const in parser.go).
 	content := `  △ Permission required
 
   # Bash command

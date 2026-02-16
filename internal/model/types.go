@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+// EvalSource constants identify how a Verdict was produced.
+const (
+	EvalSourceParser = "parser"
+	EvalSourceLLM    = "llm"
+	EvalSourceCache  = "cache"
+	EvalSourceError  = "error"
+)
+
 // Pane represents a terminal multiplexer pane.
 type Pane struct {
 	// Target is the fully qualified pane identifier (e.g., "session:0.0").
@@ -63,7 +71,8 @@ type Verdict struct {
 	// Content is the raw pane capture. Only populated when verbose mode is enabled.
 	Content string `json:"content,omitempty"`
 
-	// EvalSource records how this verdict was produced: "parser", "llm", or "cache".
+	// EvalSource records how this verdict was produced.
+	// Use the EvalSource* constants.
 	EvalSource string `json:"eval_source"`
 
 	// Model is the LLM model that produced this verdict.
