@@ -27,14 +27,24 @@ var (
 	riskMedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	riskHighStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 	statusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-)
 
-// view mode
-type viewMode int
+	// Agent-specific dialog border styles.
+	// OpenCode uses a thick "┃" left border in different colors:
+	//   - warning/yellow for permission dialogs
+	//   - accent/blue for question dialogs
+	//   - error/red for reject dialogs
+	warningBorderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow — OpenCode permission
+	accentBorderStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // blue — OpenCode question
+	errorBorderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red — OpenCode reject
 
-const (
-	modeVerdictList viewMode = iota
-	modeTextInput
+	// Claude Code uses a muted style for tool details.
+	claudeToolStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan — tool name
+	claudeDimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))  // dim — details
+
+	// Codex uses bold for titles and "$ " for commands.
+	codexTitleStyle   = lipgloss.NewStyle().Bold(true)
+	codexCommandStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green — commands
+	codexCursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan — "›" cursor
 )
 
 // displayFilter controls which panes are visible in the TUI.
@@ -122,7 +132,6 @@ type tuiModel struct {
 	refreshInterval time.Duration
 	verdicts        []model.Verdict
 	cursor          int
-	mode            viewMode
 	focus           focusPanel
 
 	// display filter
@@ -134,11 +143,11 @@ type tuiModel struct {
 	items    []listItem      // visible items (rebuilt on verdicts/expand change)
 
 	// action panel state
-	actionCursor int // selected action index (0-based) in the right panel
+	actionCursor int  // selected action index (0-based) in the right panel
+	editing      bool // true when inline text input is active in the action panel
 
-	// text input state
-	textInput  textinput.Model
-	textTarget *model.Verdict // pane to send typed text to
+	// text input state (rendered inline in the action panel)
+	textInput textinput.Model
 
 	// layout (computed in viewVerdictList, used for mouse hit testing)
 	actionPanelX int // X offset where the action panel starts
@@ -341,12 +350,30 @@ func (m *tuiModel) clampActionCursor() {
 // and triggers a rescan. Does NOT auto-jump to the target pane — the user stays
 // in the supervisor TUI and can see the status message. Manual navigation via
 // Enter/click is still available.
+//
+// Special case: "Type your own answer" / "None of the above" actions first send
+// the digit key to select the custom option, then transition to text input mode
+// so the user can type a freeform answer. The text is sent on Enter.
 func (m *tuiModel) executeSelectedAction() tea.Cmd {
 	v := m.selectedVerdict()
 	if v == nil || !v.Blocked || m.actionCursor >= len(v.Actions) {
 		return nil
 	}
 	action := v.Actions[m.actionCursor]
+
+	// Custom answer actions ("Type your own answer", "None of the above"):
+	// In single-select questions, selecting the custom answer option activates
+	// inline text input (the full sequence digit → text → Enter is sent on submit).
+	// In multi-select questions, number keys always toggle checkboxes — use 't'
+	// to activate text input instead.
+	if isCustomAnswerAction(action) && !isMultiSelectQuestion(v) {
+		m.editing = true
+		m.textInput.SetValue("")
+		m.textInput.Placeholder = "Type your answer and press Enter..."
+		m.textInput.Focus()
+		return textinput.Blink
+	}
+
 	err := NudgePane(v.Target, action.Keys, action.Raw)
 	if err != nil {
 		m.message = fmt.Sprintf("Nudge failed: %v", err)
@@ -358,7 +385,13 @@ func (m *tuiModel) executeSelectedAction() tea.Cmd {
 		m.scanner.Cache.Invalidate(v.Target)
 		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 	}
-	m.focus = panelList
+	// For multi-select toggles, keep focus on the action panel so the user
+	// can continue toggling options. For all other actions, return to list.
+	if isMultiSelectQuestion(v) && isToggleAction(action) {
+		// Stay on the action panel — user is still toggling checkboxes
+	} else {
+		m.focus = panelList
+	}
 	m.scanning = true
 	return m.doScan()
 }
@@ -400,7 +433,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.scheduleTick(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		if m.focus != panelActions && m.mode != modeTextInput {
+		if m.focus != panelActions && !m.editing {
 			if cmd := m.autoNudgeCmd(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -415,7 +448,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Auto-refresh: skip if already scanning, focused on actions, or typing
-		if m.scanning || m.mode == modeTextInput || m.focus == panelActions {
+		if m.scanning || m.editing || m.focus == panelActions {
 			return m, m.scheduleTick()
 		}
 		m.scanning = true
@@ -426,20 +459,18 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch m.mode {
-	case modeVerdictList:
-		if m.focus == panelActions {
-			return m.handleActionPanelKey(msg)
-		}
-		return m.handleVerdictListKey(msg)
-	case modeTextInput:
-		return m.handleTextInputKey(msg)
+	// Inline text input takes priority when active
+	if m.editing {
+		return m.handleInlineTextInputKey(msg)
 	}
-	return m, nil
+	if m.focus == panelActions {
+		return m.handleActionPanelKey(msg)
+	}
+	return m.handleVerdictListKey(msg)
 }
 
 func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.mode != modeVerdictList {
+	if m.editing {
 		return m, nil
 	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
@@ -568,6 +599,12 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v := m.selectedVerdict()
 			if v != nil {
 				m.actionCursor = v.Recommended
+				// Auto-activate text input for custom answer dialogs
+				if hasQuestionWithCustomAnswer(v) {
+					m.editing = true
+					m.textInput.SetValue("")
+					m.textInput.Focus()
+				}
 			}
 			m.clampActionCursor()
 		} else if m.cursor >= 0 && m.cursor < len(m.items) {
@@ -624,13 +661,14 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.executeSelectedAction()
 
 	case "t":
-		// Open text input to type a response to the selected pane
+		// Open inline text input in the action panel
 		if m.cursor >= 0 && m.cursor < len(m.items) {
 			v := m.selectedVerdict()
 			if v != nil {
-				m.mode = modeTextInput
-				m.textTarget = v
+				m.editing = true
+				m.focus = panelActions
 				m.textInput.SetValue("")
+				m.textInput.Placeholder = "Type response and press Enter..."
 				m.textInput.Focus()
 				return m, textinput.Blink
 			}
@@ -695,6 +733,17 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		return m, m.executeSelectedAction()
 
+	case " ":
+		// Spacebar toggles the current item in multi-select checklists.
+		v := m.selectedVerdict()
+		if v != nil && isMultiSelectQuestion(v) && m.actionCursor < len(v.Actions) {
+			action := v.Actions[m.actionCursor]
+			if isToggleAction(action) {
+				return m, m.executeSelectedAction()
+			}
+		}
+		return m, nil
+
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		v := m.selectedVerdict()
 		if v == nil || !v.Blocked {
@@ -708,13 +757,12 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.executeSelectedAction()
 
 	case "t":
-		// Open text input from action panel
+		// Open inline text input (stays in action panel)
 		v := m.selectedVerdict()
 		if v != nil {
-			m.mode = modeTextInput
-			m.focus = panelList
-			m.textTarget = v
+			m.editing = true
 			m.textInput.SetValue("")
+			m.textInput.Placeholder = "Type response and press Enter..."
 			m.textInput.Focus()
 			return m, textinput.Blink
 		}
@@ -730,37 +778,121 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) handleTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// handleInlineTextInputKey handles keys when the inline text input is active
+// in the action panel. Most keys are forwarded to the text input widget, but
+// certain keys are intercepted to allow interaction with the action panel:
+//   - Number keys 1-9: toggle checkboxes (multi-select) or execute actions
+//   - Arrow keys up/down: navigate the action cursor
+//   - Space: toggle current checkbox (multi-select)
+//   - Enter: submit text (if non-empty) or submit selection (if empty)
+//   - Escape: close text input and return to list
+func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "escape":
-		m.mode = modeVerdictList
-		m.textTarget = nil
+		m.editing = false
 		m.textInput.Blur()
+		m.textInput.SetValue("")
+		m.focus = panelList
+		return m, nil
+
+	case "up", "k":
+		if m.actionCursor > 0 {
+			m.actionCursor--
+		}
+		return m, nil
+
+	case "down", "j":
+		count := m.selectedActionCount()
+		if m.actionCursor < count-1 {
+			m.actionCursor++
+		}
+		return m, nil
+
+	case " ":
+		// Space toggles the current checkbox in multi-select
+		v := m.selectedVerdict()
+		if v != nil && isMultiSelectQuestion(v) && m.actionCursor < len(v.Actions) {
+			action := v.Actions[m.actionCursor]
+			if isToggleAction(action) {
+				err := NudgePane(v.Target, action.Keys, action.Raw)
+				if err != nil {
+					m.message = fmt.Sprintf("Nudge failed: %v", err)
+				}
+				if m.scanner.Cache != nil {
+					m.scanner.Cache.Invalidate(v.Target)
+					m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
+				}
+				m.scanning = true
+				return m, m.doScan()
+			}
+		}
+		// Otherwise forward space to text input
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// Number keys toggle checkboxes / execute actions
+		v := m.selectedVerdict()
+		if v != nil && v.Blocked {
+			idx := int(msg.String()[0] - '1')
+			if idx < len(v.Actions) {
+				action := v.Actions[idx]
+				m.actionCursor = idx
+				err := NudgePane(v.Target, action.Keys, action.Raw)
+				if err != nil {
+					m.message = fmt.Sprintf("Nudge failed: %v", err)
+				} else {
+					m.message = fmt.Sprintf("Sent '%s' to %s (%s)", action.Keys, v.Target, action.Label)
+				}
+				if m.scanner.Cache != nil {
+					m.scanner.Cache.Invalidate(v.Target)
+					m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
+				}
+				m.scanning = true
+				return m, m.doScan()
+			}
+		}
 		return m, nil
 
 	case "enter":
 		text := m.textInput.Value()
-		if text != "" && m.textTarget != nil {
-			target := m.textTarget.Target
-			err := NudgePane(target, text, false)
-			if err != nil {
-				m.message = fmt.Sprintf("Send failed: %v", err)
+		v := m.selectedVerdict()
+		if text != "" && v != nil {
+			target := v.Target
+
+			// For question dialogs with a custom answer option, send:
+			// 1. The digit key to select the custom option in the agent's TUI
+			// 2. The typed text (into the agent's inline textarea)
+			// 3. Enter to confirm the answer
+			if customAction := findCustomAnswerAction(v); customAction != nil {
+				if err := NudgePane(target, customAction.Keys, customAction.Raw); err != nil {
+					m.message = fmt.Sprintf("Select custom option failed: %v", err)
+				} else if err := NudgePane(target, text, false); err != nil {
+					m.message = fmt.Sprintf("Send text failed: %v", err)
+				} else if err := NudgePane(target, "Enter", true); err != nil {
+					m.message = fmt.Sprintf("Send Enter failed: %v", err)
+				} else {
+					m.message = fmt.Sprintf("Answered '%s' to %s", truncate(text, 40), target)
+				}
 			} else {
-				m.message = fmt.Sprintf("Sent '%s' to %s", truncate(text, 40), target)
+				// Plain text input (not a question dialog)
+				if err := NudgePane(target, text, false); err != nil {
+					m.message = fmt.Sprintf("Send failed: %v", err)
+				} else {
+					m.message = fmt.Sprintf("Sent '%s' to %s", truncate(text, 40), target)
+				}
 			}
+
 			// Invalidate cache so the next scan re-evaluates this pane
 			if m.scanner.Cache != nil {
 				m.scanner.Cache.Invalidate(target)
 				m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 			}
-			// Navigate tmux to the target pane
-			if errMsg := jumpToPane(target); errMsg != "" {
-				m.message = errMsg
-			}
 		}
-		m.mode = modeVerdictList
-		m.textTarget = nil
+		m.editing = false
 		m.textInput.Blur()
+		m.textInput.SetValue("")
 		// Rescan after sending input
 		m.scanning = true
 		return m, m.doScan()
@@ -777,13 +909,7 @@ func (m *tuiModel) View() string {
 		return "Loading..."
 	}
 
-	switch m.mode {
-	case modeVerdictList:
-		return m.viewVerdictList()
-	case modeTextInput:
-		return m.viewTextInput()
-	}
-	return ""
+	return m.viewVerdictList()
 }
 
 func (m *tuiModel) viewVerdictList() string {
@@ -978,22 +1104,13 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		return lines
 	}
 
-	// Blocked: show the dialog the agent is waiting on, then the reason
-	if v.WaitingFor != "" {
-		for _, wl := range strings.Split(v.WaitingFor, "\n") {
-			for _, rl := range wrapText(wl, width) {
-				lines = append(lines, blockedStyle.Render(rl))
-			}
-		}
-	} else if v.Reason != "" {
-		for _, rl := range wrapText(v.Reason, width) {
-			lines = append(lines, blockedStyle.Render(rl))
-		}
+	// Multi-select questions: render interactive checklist instead of action buttons.
+	if isMultiSelectQuestion(v) {
+		return m.buildMultiSelectPanel(v, width, lines)
 	}
-	// Show the one-line reason below the dialog as context
-	if v.WaitingFor != "" && v.Reason != "" {
-		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
-	}
+
+	// Blocked: render agent-specific dialog representation
+	lines = append(lines, renderDialogContent(v, width)...)
 	lines = append(lines, "") // blank separator
 
 	// Actions with number keys — highlight selected when panel is focused
@@ -1019,10 +1136,461 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		}
 	}
 
-	// Show hint for custom text input when focused
-	if focused {
+	// Show inline text input for question dialogs with a custom answer option
+	// (always visible, no need to activate the option first), or when
+	// explicitly editing via 't' key for other panes.
+	if hasQuestionWithCustomAnswer(v) || m.editing {
+		lines = append(lines, m.renderInlineTextInput(width)...)
+	} else if focused {
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("  t = type custom response"))
+	}
+
+	return lines
+}
+
+// renderInlineTextInput renders the text input widget inline as action panel
+// lines. This is a single generic renderer used for all text input scenarios:
+// custom answers in multi-select questions, custom answers in single-select
+// questions, and freeform text input activated via 't'.
+func (m *tuiModel) renderInlineTextInput(width int) []string {
+	var lines []string
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render(truncate("  Type response:", width)))
+
+	// Render the text input widget (includes cursor when focused)
+	inputView := m.textInput.View()
+	lines = append(lines, "  "+inputView)
+
+	if m.editing {
+		lines = append(lines, dimStyle.Render("  enter=submit  esc=cancel"))
+	}
+
+	return lines
+}
+
+// renderDialogContent produces agent-specific styled lines for the dialog
+// that the agent is blocked on. Dispatches based on v.Agent and v.Reason to
+// replicate the visual style of each agent's TUI dialogs.
+func renderDialogContent(v *model.Verdict, width int) []string {
+	if v.Agent == "opencode" {
+		return renderOpenCodeDialog(v, width)
+	}
+	if v.Agent == "claude_code" {
+		return renderClaudeCodeDialog(v, width)
+	}
+	if v.Agent == "codex" {
+		return renderCodexDialog(v, width)
+	}
+	return renderGenericDialog(v, width)
+}
+
+// renderOpenCodeDialog renders OpenCode dialogs with the characteristic "┃"
+// left border in the appropriate color (yellow=permission, blue=question, red=reject).
+//
+// Source: packages/opencode/src/cli/cmd/tui/component/border.tsx
+// SplitBorder uses "┃" (thick vertical) as left border.
+func renderOpenCodeDialog(v *model.Verdict, width int) []string {
+	var lines []string
+	border := "┃ "
+	borderWidth := 2
+
+	reason := strings.ToLower(v.Reason)
+	var borderStyle lipgloss.Style
+	switch {
+	case strings.Contains(reason, "permission"):
+		borderStyle = warningBorderStyle
+		// Title line: △ Permission required
+		lines = append(lines, borderStyle.Render(border)+blockedStyle.Render("△ Permission required"))
+	case strings.Contains(reason, "reject"):
+		borderStyle = errorBorderStyle
+		lines = append(lines, borderStyle.Render(border)+errorStyle.Render("△ Reject permission"))
+	case strings.Contains(reason, "question"):
+		borderStyle = accentBorderStyle
+		// No special title — question text comes from WaitingFor
+	default:
+		// Idle or other — use dim border
+		borderStyle = dimStyle
+	}
+
+	// Render WaitingFor content with the colored border prefix
+	content := v.WaitingFor
+	if content == "" {
+		content = v.Reason
+	}
+	contentWidth := width - borderWidth
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+	for _, wl := range strings.Split(content, "\n") {
+		for _, rl := range wrapText(wl, contentWidth) {
+			lines = append(lines, borderStyle.Render(border)+rl)
+		}
+	}
+
+	// Show the one-line reason as context below the dialog
+	if v.WaitingFor != "" && v.Reason != "" {
+		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+	}
+
+	return lines
+}
+
+// renderClaudeCodeDialog renders Claude Code dialogs without box borders —
+// Claude Code uses a full-screen overlay with tool name, command details,
+// and "❯" cursor on options.
+//
+// Source: binary analysis of /opt/homebrew/Caskroom/claude-code/*/claude
+// Permission dialog: "Claude needs your permission to use {tool}"
+// Edit approval: "Do you want to make this edit to {filename}?"
+func renderClaudeCodeDialog(v *model.Verdict, width int) []string {
+	var lines []string
+
+	reason := strings.ToLower(v.Reason)
+	switch {
+	case strings.Contains(reason, "permission"):
+		lines = append(lines, claudeToolStyle.Render("Permission required"))
+	case strings.Contains(reason, "edit"):
+		lines = append(lines, claudeToolStyle.Render("Edit approval"))
+	case strings.Contains(reason, "idle"):
+		lines = append(lines, claudeDimStyle.Render("Idle at prompt"))
+	default:
+		lines = append(lines, claudeToolStyle.Render("Waiting"))
+	}
+
+	// Render WaitingFor content — Claude Code dialog details
+	content := v.WaitingFor
+	if content == "" {
+		content = v.Reason
+	}
+	for _, wl := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(wl)
+		// Highlight command lines (start with "$")
+		if strings.HasPrefix(trimmed, "$ ") {
+			for _, rl := range wrapText(wl, width) {
+				lines = append(lines, codexCommandStyle.Render(rl))
+			}
+		} else {
+			lines = append(lines, wrapText(wl, width)...)
+		}
+	}
+
+	// Show reason as context
+	if v.WaitingFor != "" && v.Reason != "" {
+		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+	}
+
+	return lines
+}
+
+// renderCodexDialog renders Codex dialogs with bold titles, "$ " commands
+// in green, and "›" selection cursor.
+//
+// Source: codex-rs/tui/src/bottom_pane/approval_overlay.rs
+// Title in bold, "$ command" prefix, "Reason: " prefix in italic,
+// "›" selection cursor on options.
+func renderCodexDialog(v *model.Verdict, width int) []string {
+	var lines []string
+
+	reason := strings.ToLower(v.Reason)
+	switch {
+	case strings.Contains(reason, "command approval"):
+		lines = append(lines, codexTitleStyle.Render("Command approval"))
+	case strings.Contains(reason, "edit approval"):
+		lines = append(lines, codexTitleStyle.Render("Edit approval"))
+	case strings.Contains(reason, "network"):
+		lines = append(lines, codexTitleStyle.Render("Network access"))
+	case strings.Contains(reason, "mcp"):
+		lines = append(lines, codexTitleStyle.Render("MCP approval"))
+	case strings.Contains(reason, "question"):
+		lines = append(lines, codexTitleStyle.Render("Question"))
+	case strings.Contains(reason, "user input"):
+		lines = append(lines, codexTitleStyle.Render("User input requested"))
+	case strings.Contains(reason, "idle"):
+		lines = append(lines, dimStyle.Render("Idle at prompt"))
+	default:
+		lines = append(lines, codexTitleStyle.Render("Waiting"))
+	}
+
+	// Render WaitingFor content with Codex styling
+	content := v.WaitingFor
+	if content == "" {
+		content = v.Reason
+	}
+	for _, wl := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(wl)
+		switch {
+		case strings.HasPrefix(trimmed, "$ "):
+			// Command with $ prefix in green
+			for _, rl := range wrapText(wl, width) {
+				lines = append(lines, codexCommandStyle.Render(rl))
+			}
+		case strings.HasPrefix(trimmed, "› ") || strings.HasPrefix(trimmed, "›"):
+			// Selection cursor in cyan
+			for _, rl := range wrapText(wl, width) {
+				lines = append(lines, codexCursorStyle.Render(rl))
+			}
+		default:
+			lines = append(lines, wrapText(wl, width)...)
+		}
+	}
+
+	// Show reason as context
+	if v.WaitingFor != "" && v.Reason != "" {
+		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+	}
+
+	return lines
+}
+
+// renderGenericDialog renders a generic blocked dialog for unknown agents.
+// Falls back to the previous behavior: WaitingFor in yellow, reason in dim.
+func renderGenericDialog(v *model.Verdict, width int) []string {
+	var lines []string
+	if v.WaitingFor != "" {
+		for _, wl := range strings.Split(v.WaitingFor, "\n") {
+			for _, rl := range wrapText(wl, width) {
+				lines = append(lines, blockedStyle.Render(rl))
+			}
+		}
+	} else if v.Reason != "" {
+		for _, rl := range wrapText(v.Reason, width) {
+			lines = append(lines, blockedStyle.Render(rl))
+		}
+	}
+	if v.WaitingFor != "" && v.Reason != "" {
+		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+	}
+	return lines
+}
+
+// isToggleAction returns true if the action is a single-digit key (1-9),
+// indicating it toggles a multi-select checkbox rather than submitting.
+func isToggleAction(a model.Action) bool {
+	return len(a.Keys) == 1 && a.Keys[0] >= '1' && a.Keys[0] <= '9'
+}
+
+// isCustomAnswerAction returns true if the action represents a "type your
+// own answer" option. Both OpenCode ("Type your own answer") and Codex
+// ("None of the above") use freeform text entry for these options.
+func isCustomAnswerAction(a model.Action) bool {
+	lower := strings.ToLower(a.Label)
+	return strings.Contains(lower, "type your own") ||
+		strings.Contains(lower, "none of the above")
+}
+
+// findCustomAnswerAction returns the custom answer action from a verdict's
+// action list, or nil if none exists.
+func findCustomAnswerAction(v *model.Verdict) *model.Action {
+	if v == nil {
+		return nil
+	}
+	for i := range v.Actions {
+		if isCustomAnswerAction(v.Actions[i]) {
+			return &v.Actions[i]
+		}
+	}
+	return nil
+}
+
+// hasQuestionWithCustomAnswer returns true if the verdict is a question
+// dialog that has a "Type your own answer" / "None of the above" option.
+func hasQuestionWithCustomAnswer(v *model.Verdict) bool {
+	if v == nil || !v.Blocked || !strings.Contains(v.Reason, "question") {
+		return false
+	}
+	return findCustomAnswerAction(v) != nil
+}
+
+// isMultiSelectQuestion returns true if the verdict represents a multi-select
+// question dialog (options have [✓]/[ ] checkbox prefixes).
+func isMultiSelectQuestion(v *model.Verdict) bool {
+	if !v.Blocked || !strings.Contains(v.Reason, "question") {
+		return false
+	}
+	return strings.Contains(v.WaitingFor, "[ ]") || strings.Contains(v.WaitingFor, "[✓]")
+}
+
+// checklistItem represents a parsed option from a multi-select question.
+type checklistItem struct {
+	label       string
+	description string
+	checked     bool
+}
+
+// parseChecklist splits WaitingFor content into question text and checkbox items.
+func parseChecklist(waitingFor string) (questionText string, items []checklistItem) {
+	wfLines := strings.Split(waitingFor, "\n")
+
+	// Find first numbered option
+	firstOptIdx := -1
+	for i, line := range wfLines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) >= 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && trimmed[1] == '.' {
+			firstOptIdx = i
+			break
+		}
+	}
+	if firstOptIdx < 0 {
+		return waitingFor, nil
+	}
+
+	// Question text = everything before first option
+	var qLines []string
+	for i := 0; i < firstOptIdx; i++ {
+		trimmed := strings.TrimSpace(wfLines[i])
+		if trimmed != "" {
+			qLines = append(qLines, trimmed)
+		}
+	}
+	questionText = strings.Join(qLines, "\n")
+
+	// Parse options with descriptions
+	for i := firstOptIdx; i < len(wfLines); i++ {
+		trimmed := strings.TrimSpace(wfLines[i])
+		if len(trimmed) >= 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && trimmed[1] == '.' {
+			item := checklistItem{
+				label:   trimmed,
+				checked: strings.Contains(trimmed, "[✓]"),
+			}
+			// Next line is description if indented (starts with spaces in the WaitingFor)
+			if i+1 < len(wfLines) {
+				next := wfLines[i+1]
+				nextTrimmed := strings.TrimSpace(next)
+				// Description lines are indented with "  " in WaitingFor
+				if strings.HasPrefix(next, "  ") && nextTrimmed != "" &&
+					(len(nextTrimmed) < 2 || nextTrimmed[0] < '1' || nextTrimmed[0] > '9' || nextTrimmed[1] != '.') {
+					item.description = nextTrimmed
+					i++ // skip description line
+				}
+			}
+			items = append(items, item)
+		}
+	}
+
+	return questionText, items
+}
+
+// buildMultiSelectPanel renders a multi-select question as an interactive
+// checklist. Options are navigable with up/down, togglable with Enter or
+// number keys, with Submit and Dismiss at the bottom.
+func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []string) []string {
+	focused := m.focus == panelActions
+	borderStyle := accentBorderStyle
+	border := "┃ "
+	borderWidth := 2
+	contentWidth := width - borderWidth
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+
+	// Parse question text and checkbox options
+	questionText, checkItems := parseChecklist(v.WaitingFor)
+
+	// Question text with blue border
+	if questionText != "" {
+		for _, wl := range wrapText(questionText, contentWidth) {
+			lines = append(lines, borderStyle.Render(border)+wl)
+		}
+	}
+	lines = append(lines, "")
+
+	// Render each option as a navigable checkbox line.
+	// actionCursor 0..N-1 maps to toggle actions, N+ maps to submit/dismiss.
+	// For the custom answer option, render the text input directly below it.
+	hasCustom := hasQuestionWithCustomAnswer(v)
+	textInputRendered := false
+	for i, item := range checkItems {
+		if i >= len(v.Actions) {
+			break
+		}
+
+		isCustomOpt := hasCustom && isCustomAnswerAction(v.Actions[i])
+
+		// Checkbox indicator
+		checkbox := "[ ]"
+		checkStyle := dimStyle
+		if item.checked {
+			checkbox = "[✓]"
+			checkStyle = activeStyle
+		}
+
+		optLabel := item.label
+		// Strip the "N. [ ] " or "N. [✓] " prefix for clean display
+		if idx := strings.Index(optLabel, "] "); idx >= 0 {
+			optLabel = optLabel[idx+2:]
+		} else if len(optLabel) > 3 {
+			// "N. label" without checkbox
+			optLabel = optLabel[3:]
+		}
+		optLabel = strings.TrimSpace(optLabel)
+
+		line := fmt.Sprintf(" %s %d. %s", checkbox, i+1, optLabel)
+		line = truncate(line, width)
+
+		if focused && m.actionCursor == i {
+			lines = append(lines, selectedStyle.Render(padRight("→"+line[1:], width)))
+		} else {
+			// line = " [ ] 1. label" — style the leading " [ ]" (4 chars), then append the rest unstyled.
+			lines = append(lines, checkStyle.Render(line[:4])+line[4:])
+		}
+
+		// Description in dim, indented
+		if item.description != "" && !isCustomOpt {
+			desc := "      " + item.description
+			desc = truncate(desc, width)
+			lines = append(lines, dimStyle.Render(desc))
+		}
+
+		// Render the generic text input under the custom answer option
+		if isCustomOpt {
+			lines = append(lines, m.renderInlineTextInput(width)...)
+			textInputRendered = true
+		}
+	}
+
+	// Fallback: if the text input wasn't rendered under a custom option
+	// (e.g., option truncated from WaitingFor), show it when editing via 't'.
+	if m.editing && !textInputRendered {
+		lines = append(lines, m.renderInlineTextInput(width)...)
+	}
+
+	lines = append(lines, "")
+
+	// Submit and Dismiss actions (after toggle options in the actions array)
+	toggleCount := len(checkItems)
+	if toggleCount > len(v.Actions) {
+		toggleCount = len(v.Actions)
+	}
+	for i := toggleCount; i < len(v.Actions) && i < toggleCount+4; i++ {
+		a := v.Actions[i]
+		rec := " "
+		if i == v.Recommended {
+			rec = "*"
+		}
+		label := fmt.Sprintf(" %s[%s] %s", rec, a.Keys, a.Label)
+		label = truncate(label, width)
+
+		if focused && m.actionCursor == i {
+			lines = append(lines, selectedStyle.Render(padRight("→"+label[1:], width)))
+		} else {
+			lines = append(lines, label)
+		}
+	}
+
+	// Hint line
+	if focused {
+		lines = append(lines, "")
+		optCount := len(checkItems)
+		if hasCustom {
+			// Don't count the custom option in the toggle range
+			optCount--
+		}
+		if optCount > 0 {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("  space/1-%d=toggle  enter=submit  esc=back", optCount)))
+		} else {
+			lines = append(lines, dimStyle.Render("  enter=submit  esc=back"))
+		}
 	}
 
 	return lines
@@ -1114,28 +1682,6 @@ func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int)
 	}
 
 	return nameCol, reasonCol
-}
-
-func (m *tuiModel) viewTextInput() string {
-	if m.textTarget == nil {
-		return ""
-	}
-
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("  Type Response"))
-	b.WriteString("\n")
-	b.WriteString(headerStyle.Render("  ─────────────────────────────────────────"))
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  Target: %s\n", m.textTarget.Target))
-	b.WriteString(fmt.Sprintf("  Reason: %s\n", m.textTarget.Reason))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  Enter=send  Escape=cancel"))
-	b.WriteString("\n\n")
-	b.WriteString("  " + m.textInput.View())
-	b.WriteString("\n")
-
-	return b.String()
 }
 
 // sessionIcon returns an icon string for a session group.
