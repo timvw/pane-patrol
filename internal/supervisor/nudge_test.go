@@ -156,7 +156,7 @@ func TestNudger_RawMode(t *testing.T) {
 		Sleep: func(d time.Duration) {},
 	}
 
-	// "y" with raw=true should send just "y" — no Escape, no Enter
+	// "y" with raw=true should send "y" with -l flag — no Escape, no Enter
 	err := nudger.NudgePane("session:0.0", "y", true)
 	if err != nil {
 		t.Fatalf("NudgePane() error: %v", err)
@@ -165,8 +165,8 @@ func TestNudger_RawMode(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 send-keys call for raw mode, got %d: %v", len(calls), calls)
 	}
-	if calls[0].flag != "" {
-		t.Errorf("raw mode should not use -l flag, got %q", calls[0].flag)
+	if calls[0].flag != "-l" {
+		t.Errorf("raw literal should use -l flag, got %q", calls[0].flag)
 	}
 	if calls[0].keys != "y" {
 		t.Errorf("got keys=%q, want %q", calls[0].keys, "y")
@@ -228,6 +228,71 @@ func TestNudger_RawTripleKeySequence(t *testing.T) {
 	}
 }
 
+// TestNudger_RawMixedSequence verifies "Down y" is split into two calls:
+// "Down" sent as raw control sequence, "y" sent with -l literal flag.
+// This is the Claude Code "approve and don't ask again" action.
+func TestNudger_RawMixedSequence(t *testing.T) {
+	var calls []sendKeysCall
+	nudger := &Nudger{
+		SendKeys: func(paneID, flag, keys string) error {
+			calls = append(calls, sendKeysCall{paneID, flag, keys})
+			return nil
+		},
+		Sleep: func(d time.Duration) {},
+	}
+
+	err := nudger.NudgePane("session:0.0", "Down y", true)
+	if err != nil {
+		t.Fatalf("NudgePane() error: %v", err)
+	}
+
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 send-keys calls for 'Down y', got %d: %v", len(calls), calls)
+	}
+	// "Down" is a control sequence — no -l flag
+	if calls[0].flag != "" {
+		t.Errorf("call 1 (Down): got flag=%q, want \"\"", calls[0].flag)
+	}
+	if calls[0].keys != "Down" {
+		t.Errorf("call 1: got keys=%q, want %q", calls[0].keys, "Down")
+	}
+	// "y" is a literal character — needs -l flag
+	if calls[1].flag != "-l" {
+		t.Errorf("call 2 (y): got flag=%q, want \"-l\"", calls[1].flag)
+	}
+	if calls[1].keys != "y" {
+		t.Errorf("call 2: got keys=%q, want %q", calls[1].keys, "y")
+	}
+}
+
+// TestNudger_RawControlOnly verifies that pure control sequences in raw mode
+// are sent without the -l flag.
+func TestNudger_RawControlOnly(t *testing.T) {
+	var calls []sendKeysCall
+	nudger := &Nudger{
+		SendKeys: func(paneID, flag, keys string) error {
+			calls = append(calls, sendKeysCall{paneID, flag, keys})
+			return nil
+		},
+		Sleep: func(d time.Duration) {},
+	}
+
+	err := nudger.NudgePane("session:0.0", "Enter", true)
+	if err != nil {
+		t.Fatalf("NudgePane() error: %v", err)
+	}
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 send-keys call, got %d: %v", len(calls), calls)
+	}
+	if calls[0].flag != "" {
+		t.Errorf("control sequence should not use -l flag, got %q", calls[0].flag)
+	}
+	if calls[0].keys != "Enter" {
+		t.Errorf("got keys=%q, want %q", calls[0].keys, "Enter")
+	}
+}
+
 func TestSplitKeySequence(t *testing.T) {
 	tests := []struct {
 		input string
@@ -237,9 +302,9 @@ func TestSplitKeySequence(t *testing.T) {
 		{"Down Enter", []string{"Down", "Enter"}},
 		{"Down Down Enter", []string{"Down", "Down", "Enter"}},
 		{"C-c", []string{"C-c"}},
-		// Mixed: "y" is not a control sequence, so don't split
-		{"hello world", []string{"hello world"}},
-		{"Down y", []string{"Down y"}},
+		// Mixed control + literal: always split
+		{"hello world", []string{"hello", "world"}},
+		{"Down y", []string{"Down", "y"}},
 	}
 
 	for _, tt := range tests {

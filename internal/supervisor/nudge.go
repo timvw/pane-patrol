@@ -102,9 +102,12 @@ func (n *Nudger) nudgeLiteral(paneID, keys string) error {
 	return fmt.Errorf("failed to send Enter after 3 attempts: %w", lastErr)
 }
 
-// nudgeRaw sends a control sequence (no literal mode, no Enter).
-// Supports space-separated key sequences (e.g., "Down Enter", "Down Down Enter")
-// where each token is sent as a separate raw keystroke with a small delay.
+// nudgeRaw sends keystrokes for TUIs in raw mode (no Escape/Enter appended).
+// Supports space-separated key sequences (e.g., "Down Enter", "Down y")
+// where each token is sent as a separate keystroke with a small delay.
+// Control sequences (Enter, Down, C-c, etc.) are sent as tmux key names;
+// literal characters (y, n, etc.) are sent with the -l flag so tmux
+// delivers the actual character to the TUI's stdin.
 func (n *Nudger) nudgeRaw(paneID, keys string) error {
 	sendKeys := n.SendKeys
 	if sendKeys == nil {
@@ -115,32 +118,31 @@ func (n *Nudger) nudgeRaw(paneID, keys string) error {
 		sleep = time.Sleep
 	}
 
-	// Split on spaces to support multi-key sequences like "Down Enter"
 	parts := splitKeySequence(keys)
 	for i, part := range parts {
 		if i > 0 {
 			sleep(100 * time.Millisecond)
 		}
-		if err := sendKeys(paneID, "", part); err != nil {
+		flag := ""
+		if !isControlSequence(part) {
+			flag = "-l"
+		}
+		if err := sendKeys(paneID, flag, part); err != nil {
 			return fmt.Errorf("send raw key %q (step %d): %w", part, i+1, err)
 		}
 	}
 	return nil
 }
 
-// splitKeySequence splits a key string by spaces, but only if each token
-// looks like a control sequence. If any token is not a control sequence,
-// the entire string is treated as a single key (for backward compatibility).
+// splitKeySequence splits a key string by spaces into individual tokens.
+// Each token is either a tmux control sequence name (Enter, Down, C-c, etc.)
+// or a literal character/string (y, n, etc.). The caller is responsible for
+// sending each token with the appropriate flag (raw for control sequences,
+// -l for literals).
 func splitKeySequence(keys string) []string {
 	parts := strings.Split(keys, " ")
 	if len(parts) <= 1 {
 		return []string{keys}
-	}
-	// Verify all parts are valid control sequences
-	for _, part := range parts {
-		if !isControlSequence(part) {
-			return []string{keys}
-		}
 	}
 	return parts
 }
