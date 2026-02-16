@@ -41,6 +41,16 @@ NOT blocked — even if all todos are checked, even if the main content
 area shows completed work, even if there appears to be an empty input
 area above the active indicator.
 
+Exception — stuck subagent: A subagent/task label with a spinner BUT a
+toolcall count of "(0 toolcalls)" and no "esc interrupt" in the status
+bar suggests the subagent's API call has stalled. The spinner animates
+but no work is being done. In this case, classify as BLOCKED with reason
+mentioning "subagent appears stuck" and suggest sending directive text
+to the parent agent (e.g., "the explore task appears stuck, please
+continue without it") as a low-risk action. This works because new user
+input causes the parent agent to cancel the stuck subagent and proceed.
+Also suggest "Escape" as a medium-risk alternative.
+
 Important: monitoring and supervisor tools are NOT AI coding agents. If the
 screen shows a TUI dashboard that lists panes/sessions with status indicators
 (blocked/active), action menus, scan counts, token usage summaries, or
