@@ -21,7 +21,7 @@ prompts, questions, or just finishing a task and sitting idle at their
 input prompt. With several agents running in parallel, you're constantly
 cycling through tmux windows checking if anything is stuck.
 
-The supervisor solves this with a continuous scan loop (every 10s by default):
+The supervisor solves this with a continuous scan loop (every 5s by default):
 
 1. **List** all tmux panes
 2. **Filter** — skip excluded sessions, skip the supervisor's own pane
@@ -206,7 +206,7 @@ exclude_sessions:
   - "AIGGTM-*"    # prefix glob: matches AIGGTM-1234, AIGGTM-foo, etc.
 
 # Auto-refresh interval (set to "0" or "off" to disable)
-refresh: 10s
+refresh: 5s
 
 # Verdict cache TTL — reuse LLM results when pane content hasn't changed.
 # Set to "0" or "off" to disable caching. Default: 2m.
