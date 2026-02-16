@@ -198,7 +198,7 @@ func autoEmbedInTmux() {
 	}
 
 	// Pick a session name, avoiding conflicts with existing sessions.
-	sessionName := "pane-patrol"
+	sessionName := "pane-patrol-supervisor"
 	hasSession := exec.Command(tmuxPath, "has-session", "-t", sessionName)
 	if hasSession.Run() == nil {
 		// Session exists — let tmux auto-name instead
