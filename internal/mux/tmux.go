@@ -98,15 +98,23 @@ func (t *Tmux) run(ctx context.Context, args ...string) (string, error) {
 }
 
 // getProcessTree returns the command lines of all descendant processes of the given PID.
-// Walks up to maxProcessTreeDepth levels deep to capture subprocesses spawned by agents.
+// Walks up to maxProcessTreeDepth levels deep to capture subprocesses spawned by
+// agents (covers wrapper scripts, version manager shims, and agent binaries).
+// The result is capped at maxProcessTreeEntries to avoid flooding the LLM prompt
+// with LSP servers and other long-running child processes that don't help classification.
 // Returns nil on any error — process info is best-effort, never fatal.
-const maxProcessTreeDepth = 3
+const maxProcessTreeDepth = 5
+const maxProcessTreeEntries = 15
 
 func getProcessTree(pid int) []string {
 	if pid <= 0 {
 		return nil
 	}
-	return collectProcessTree(pid, 0)
+	tree := collectProcessTree(pid, 0)
+	if len(tree) > maxProcessTreeEntries {
+		tree = tree[:maxProcessTreeEntries]
+	}
+	return tree
 }
 
 // collectProcessTree recursively collects child process command lines.
