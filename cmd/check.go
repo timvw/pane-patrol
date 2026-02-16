@@ -17,17 +17,12 @@ var checkCmd = &cobra.Command{
 	Long: `Evaluate a single terminal multiplexer pane.
 
 Known agents (OpenCode, Claude Code, Codex) are evaluated by deterministic
-parsers. Unknown agents fall back to LLM evaluation.`,
+parsers. Unrecognized panes are reported as unknown.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		target := args[0]
 
 		m, err := getMultiplexer()
-		if err != nil {
-			return err
-		}
-
-		eval, err := getEvaluator()
 		if err != nil {
 			return err
 		}
@@ -59,7 +54,7 @@ parsers. Unknown agents fall back to LLM evaluation.`,
 
 		content := model.BuildProcessHeader(pane) + capture
 
-		// Tier 1: Try deterministic parsers first (instant, free).
+		// Try deterministic parsers (instant, free).
 		registry := parser.NewRegistry()
 		var verdict model.Verdict
 		if parsed := registry.Parse(capture, pane.ProcessTree); parsed != nil {
@@ -72,29 +67,13 @@ parsers. Unknown agents fall back to LLM evaluation.`,
 			verdict.Actions = parsed.Actions
 			verdict.Recommended = parsed.Recommended
 			verdict.EvalSource = model.EvalSourceParser
-			verdict.Model = "deterministic"
-			verdict.Provider = "parser"
 		} else {
-			// Tier 2: LLM fallback.
-			if eval == nil {
-				return fmt.Errorf("no deterministic parser matched pane %q and no API key configured for LLM fallback", target)
-			}
-			llmVerdict, err := eval.Evaluate(cmd.Context(), content)
-			if err != nil {
-				return fmt.Errorf("evaluation failed for %q: %w", target, err)
-			}
+			// No parser matched — return unknown verdict.
 			verdict = model.BaseVerdict(pane, start)
-			verdict.Agent = llmVerdict.Agent
-			verdict.Blocked = llmVerdict.Blocked
-			verdict.Reason = llmVerdict.Reason
-			verdict.WaitingFor = llmVerdict.WaitingFor
-			verdict.Reasoning = llmVerdict.Reasoning
-			verdict.Actions = llmVerdict.Actions
-			verdict.Recommended = llmVerdict.Recommended
-			verdict.Usage = llmVerdict.Usage
-			verdict.EvalSource = model.EvalSourceLLM
-			verdict.Model = eval.Model()
-			verdict.Provider = eval.Provider()
+			verdict.Agent = "unknown"
+			verdict.Blocked = false
+			verdict.Reason = "not recognized by deterministic parsers"
+			verdict.EvalSource = model.EvalSourceParser
 		}
 
 		if flagVerbose {

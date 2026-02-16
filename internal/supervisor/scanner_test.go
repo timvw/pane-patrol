@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/timvw/pane-patrol/internal/model"
+	"github.com/timvw/pane-patrol/internal/parser"
 )
 
 // mockMultiplexer implements mux.Multiplexer for testing.
@@ -39,37 +39,6 @@ func (m *mockMultiplexer) CapturePane(_ context.Context, target string) (string,
 	return content, nil
 }
 
-// mockEvaluator implements evaluator.Evaluator for testing.
-type mockEvaluator struct {
-	verdicts map[string]*model.LLMVerdict // content -> verdict
-	evalErr  error
-	calls    int64 // accessed atomically — scanner runs goroutines in parallel
-}
-
-func (e *mockEvaluator) Provider() string { return "mock" }
-func (e *mockEvaluator) Model() string    { return "mock-model" }
-
-func (e *mockEvaluator) Evaluate(_ context.Context, content string) (*model.LLMVerdict, error) {
-	atomic.AddInt64(&e.calls, 1)
-	if e.evalErr != nil {
-		return nil, e.evalErr
-	}
-	if v, ok := e.verdicts[content]; ok {
-		return v, nil
-	}
-	// Default: not an agent
-	return &model.LLMVerdict{
-		Agent:   "not_an_agent",
-		Blocked: false,
-		Reason:  "default mock verdict",
-		Usage:   model.TokenUsage{InputTokens: 100, OutputTokens: 50},
-	}, nil
-}
-
-func (e *mockEvaluator) callCount() int64 {
-	return atomic.LoadInt64(&e.calls)
-}
-
 func TestScanner_BasicScan(t *testing.T) {
 	mux := &mockMultiplexer{
 		panes: []model.Pane{
@@ -77,17 +46,15 @@ func TestScanner_BasicScan(t *testing.T) {
 			{Target: "dev:0.1", Session: "dev", Window: 0, Pane: 1, PID: 5678, Command: "zsh"},
 		},
 		captures: map[string]string{
-			"dev:0.0": "$ opencode\nThinking...",
+			"dev:0.0": "$ ls\nfoo bar",
 			"dev:0.1": "$ ls\nfoo bar",
 		},
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
-
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  2,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 2,
 	}
 
 	result, err := scanner.Scan(context.Background())
@@ -99,9 +66,11 @@ func TestScanner_BasicScan(t *testing.T) {
 		t.Fatalf("got %d verdicts, want 2", len(result.Verdicts))
 	}
 
-	// Both should have been evaluated
-	if eval.callCount() != 2 {
-		t.Errorf("evaluator called %d times, want 2", eval.callCount())
+	// Both panes have no matching parser, so they should be "unknown"
+	for i, v := range result.Verdicts {
+		if v.Agent != "unknown" {
+			t.Errorf("verdict[%d].Agent: got %q, want %q", i, v.Agent, "unknown")
+		}
 	}
 }
 
@@ -119,11 +88,9 @@ func TestScanner_ExcludeSessions(t *testing.T) {
 		},
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
-
 	scanner := &Scanner{
 		Mux:             mux,
-		Evaluator:       eval,
+		Parsers:         parser.NewRegistry(),
 		ExcludeSessions: []string{"AIGGTM-*", "private"},
 		Parallel:        5,
 	}
@@ -153,11 +120,9 @@ func TestScanner_SelfExclusion(t *testing.T) {
 		},
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
-
 	scanner := &Scanner{
 		Mux:        mux,
-		Evaluator:  eval,
+		Parsers:    parser.NewRegistry(),
 		SelfTarget: "supervisor:0.0",
 		Parallel:   5,
 	}
@@ -181,12 +146,10 @@ func TestScanner_EmptyPanes(t *testing.T) {
 		captures: map[string]string{},
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
-
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  5,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 5,
 	}
 
 	result, err := scanner.Scan(context.Background())
@@ -197,12 +160,10 @@ func TestScanner_EmptyPanes(t *testing.T) {
 	if len(result.Verdicts) != 0 {
 		t.Errorf("got %d verdicts, want 0", len(result.Verdicts))
 	}
-	if eval.callCount() != 0 {
-		t.Errorf("evaluator called %d times, want 0", eval.callCount())
-	}
 }
 
 func TestScanner_EvaluationError(t *testing.T) {
+	// Test that capture failures are handled gracefully
 	mux := &mockMultiplexer{
 		panes: []model.Pane{
 			{Target: "dev:0.0", Session: "dev", PID: 1, Command: "bash"},
@@ -210,16 +171,13 @@ func TestScanner_EvaluationError(t *testing.T) {
 		captures: map[string]string{
 			"dev:0.0": "content",
 		},
-	}
-
-	eval := &mockEvaluator{
-		evalErr: fmt.Errorf("LLM unavailable"),
+		captErr: fmt.Errorf("pane no longer exists"),
 	}
 
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  1,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 1,
 	}
 
 	result, err := scanner.Scan(context.Background())
@@ -241,35 +199,40 @@ func TestScanner_EvaluationError(t *testing.T) {
 }
 
 func TestScanner_CacheHit(t *testing.T) {
+	// OpenCode idle prompt content that the parser recognizes
+	openCodeContent := "\n\n\n\n\n\n\n\n\n\n> "
+
 	mux := &mockMultiplexer{
 		panes: []model.Pane{
-			{Target: "dev:0.0", Session: "dev", PID: 1, Command: "bash"},
+			{Target: "dev:0.0", Session: "dev", PID: 1, Command: "bash", ProcessTree: []string{"opencode"}},
 		},
 		captures: map[string]string{
-			"dev:0.0": "same content",
+			"dev:0.0": openCodeContent,
 		},
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
 	cache := NewVerdictCache(5 * time.Minute)
 
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  1,
-		Cache:     cache,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 1,
+		Cache:    cache,
 	}
 
-	// First scan — cache miss, LLM called
+	// First scan — cache miss, parser produces result
 	result1, err := scanner.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan 1 error: %v", err)
 	}
-	if eval.callCount() != 1 {
-		t.Errorf("Scan 1: evaluator called %d times, want 1", eval.callCount())
-	}
 	if result1.CacheHits != 0 {
 		t.Errorf("Scan 1: got %d cache hits, want 0", result1.CacheHits)
+	}
+	if len(result1.Verdicts) != 1 {
+		t.Fatalf("Scan 1: got %d verdicts, want 1", len(result1.Verdicts))
+	}
+	if result1.Verdicts[0].EvalSource != model.EvalSourceParser {
+		t.Errorf("Scan 1: got eval_source %q, want %q", result1.Verdicts[0].EvalSource, model.EvalSourceParser)
 	}
 
 	// Second scan — same content, should be cache hit
@@ -277,59 +240,62 @@ func TestScanner_CacheHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Scan 2 error: %v", err)
 	}
-	if eval.callCount() != 1 {
-		t.Errorf("Scan 2: evaluator called %d times, want 1 (cache should prevent 2nd call)", eval.callCount())
-	}
 	if result2.CacheHits != 1 {
 		t.Errorf("Scan 2: got %d cache hits, want 1", result2.CacheHits)
 	}
 }
 
 func TestScanner_CacheInvalidatedOnContentChange(t *testing.T) {
+	// OpenCode idle prompt content that the parser recognizes
+	openCodeContent1 := "\n\n\n\n\n\n\n\n\n\n> "
+	openCodeContent2 := "\n\n\n\n\n\n\n\nDone.\n\n> "
+
 	captures := map[string]string{
-		"dev:0.0": "original content",
+		"dev:0.0": openCodeContent1,
 	}
 
 	mux := &mockMultiplexer{
 		panes: []model.Pane{
-			{Target: "dev:0.0", Session: "dev", PID: 1, Command: "bash"},
+			{Target: "dev:0.0", Session: "dev", PID: 1, Command: "bash", ProcessTree: []string{"opencode"}},
 		},
 		captures: captures,
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
 	cache := NewVerdictCache(5 * time.Minute)
 
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  1,
-		Cache:     cache,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 1,
+		Cache:    cache,
 	}
 
 	// First scan
-	_, err := scanner.Scan(context.Background())
+	result1, err := scanner.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan 1 error: %v", err)
 	}
-	if eval.callCount() != 1 {
-		t.Fatalf("Scan 1: want 1 eval call, got %d", eval.callCount())
+	if result1.CacheHits != 0 {
+		t.Errorf("Scan 1: got %d cache hits, want 0", result1.CacheHits)
 	}
 
 	// Change pane content
-	captures["dev:0.0"] = "new content after agent progressed"
+	captures["dev:0.0"] = openCodeContent2
 
 	// Second scan — content changed, should miss cache
-	_, err = scanner.Scan(context.Background())
+	result2, err := scanner.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan 2 error: %v", err)
 	}
-	if eval.callCount() != 2 {
-		t.Errorf("Scan 2: want 2 eval calls (cache miss on changed content), got %d", eval.callCount())
+	if result2.CacheHits != 0 {
+		t.Errorf("Scan 2: got %d cache hits, want 0 (content changed)", result2.CacheHits)
 	}
 }
 
 func TestScanner_ProcessHeaderIncluded(t *testing.T) {
+	// Use content that the OpenCode parser will recognize so we get a parser result
+	openCodeContent := "\n\n\n\n\n\n\n\n\n\n> "
+
 	mux := &mockMultiplexer{
 		panes: []model.Pane{
 			{
@@ -341,55 +307,33 @@ func TestScanner_ProcessHeaderIncluded(t *testing.T) {
 			},
 		},
 		captures: map[string]string{
-			"dev:0.0": "$ opencode\nThinking...",
+			"dev:0.0": openCodeContent,
 		},
 	}
 
-	// Track what content the evaluator receives
-	var receivedContent string
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
-	origEval := eval
-
-	// Use a wrapper to capture the content
-	wrapper := &contentCapturingEvaluator{inner: origEval, captured: &receivedContent}
-
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: wrapper,
-		Parallel:  1,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 1,
 	}
 
-	_, err := scanner.Scan(context.Background())
+	result, err := scanner.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan() error: %v", err)
 	}
 
-	// The content sent to the evaluator should include process header
-	if receivedContent == "" {
-		t.Fatal("evaluator received empty content")
+	if len(result.Verdicts) != 1 {
+		t.Fatalf("got %d verdicts, want 1", len(result.Verdicts))
 	}
-	if !strings.Contains(receivedContent, "[Process Info]") {
-		t.Error("content missing [Process Info] header")
-	}
-	if !strings.Contains(receivedContent, "opencode --model gpt-4o") {
-		t.Error("content missing process tree entry")
-	}
-	if !strings.Contains(receivedContent, "[Terminal Content]") {
-		t.Error("content missing [Terminal Content] header")
-	}
-}
 
-// contentCapturingEvaluator wraps an evaluator and captures the content.
-type contentCapturingEvaluator struct {
-	inner    *mockEvaluator
-	captured *string
-}
-
-func (e *contentCapturingEvaluator) Provider() string { return e.inner.Provider() }
-func (e *contentCapturingEvaluator) Model() string    { return e.inner.Model() }
-func (e *contentCapturingEvaluator) Evaluate(ctx context.Context, content string) (*model.LLMVerdict, error) {
-	*e.captured = content
-	return e.inner.Evaluate(ctx, content)
+	// The parser should have matched (OpenCode idle prompt)
+	v := result.Verdicts[0]
+	if v.Agent != "opencode" {
+		t.Errorf("Agent: got %q, want %q", v.Agent, "opencode")
+	}
+	if v.EvalSource != model.EvalSourceParser {
+		t.Errorf("EvalSource: got %q, want %q", v.EvalSource, model.EvalSourceParser)
+	}
 }
 
 func TestScanner_ListPanesError(t *testing.T) {
@@ -397,12 +341,10 @@ func TestScanner_ListPanesError(t *testing.T) {
 		listErr: fmt.Errorf("tmux not running"),
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
-
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  1,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 1,
 	}
 
 	_, err := scanner.Scan(context.Background())
@@ -422,12 +364,10 @@ func TestScanner_CapturePaneError(t *testing.T) {
 		captErr: fmt.Errorf("pane no longer exists"),
 	}
 
-	eval := &mockEvaluator{verdicts: map[string]*model.LLMVerdict{}}
-
 	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  1,
+		Mux:      mux,
+		Parsers:  parser.NewRegistry(),
+		Parallel: 1,
 	}
 
 	result, err := scanner.Scan(context.Background())
@@ -442,64 +382,5 @@ func TestScanner_CapturePaneError(t *testing.T) {
 	v := result.Verdicts[0]
 	if v.Agent != "error" {
 		t.Errorf("Agent: got %q, want %q", v.Agent, "error")
-	}
-}
-
-func TestScanner_WaitingForWiredFromLLM(t *testing.T) {
-	mux := &mockMultiplexer{
-		panes: []model.Pane{
-			{Target: "dev:0.0", Session: "dev", Window: 0, Pane: 0, PID: 1234, Command: "bash"},
-		},
-		captures: map[string]string{
-			"dev:0.0": "some unknown agent\nDo you want to proceed?\n1. Yes  2. No",
-		},
-	}
-
-	// Build the expected content key (process header + capture)
-	pane := mux.panes[0]
-	expectedContent := model.BuildProcessHeader(pane) + mux.captures["dev:0.0"]
-
-	eval := &mockEvaluator{
-		verdicts: map[string]*model.LLMVerdict{
-			expectedContent: {
-				Agent:      "unknown_agent",
-				Blocked:    true,
-				Reason:     "permission dialog",
-				WaitingFor: "Do you want to proceed?\n1. Yes  2. No",
-				Actions: []model.Action{
-					{Keys: "y", Label: "approve", Risk: "medium"},
-				},
-				Recommended: 0,
-				Reasoning:   "saw a permission dialog",
-				Usage:       model.TokenUsage{InputTokens: 200, OutputTokens: 100},
-			},
-		},
-	}
-
-	scanner := &Scanner{
-		Mux:       mux,
-		Evaluator: eval,
-		Parallel:  1,
-		// No Parsers — force LLM fallback
-	}
-
-	result, err := scanner.Scan(context.Background())
-	if err != nil {
-		t.Fatalf("Scan() error: %v", err)
-	}
-
-	if len(result.Verdicts) != 1 {
-		t.Fatalf("got %d verdicts, want 1", len(result.Verdicts))
-	}
-
-	v := result.Verdicts[0]
-	if v.WaitingFor != "Do you want to proceed?\n1. Yes  2. No" {
-		t.Errorf("WaitingFor: got %q, want %q", v.WaitingFor, "Do you want to proceed?\n1. Yes  2. No")
-	}
-	if v.Recommended != 0 {
-		t.Errorf("Recommended: got %d, want 0", v.Recommended)
-	}
-	if len(v.Actions) != 1 {
-		t.Errorf("Actions: got %d, want 1", len(v.Actions))
 	}
 }

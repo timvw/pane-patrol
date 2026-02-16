@@ -156,12 +156,8 @@ type tuiModel struct {
 	autoNudge        bool   // whether auto-nudge is enabled (toggleable at runtime)
 	autoNudgeMaxRisk string // maximum risk: "low", "medium", "high"
 
-	// cumulative token usage (incremented after each scan)
-	totalInputTokens         int64
-	totalOutputTokens        int64
-	totalCacheReadTokens     int64
-	totalCacheCreationTokens int64
-	totalCacheHits           int
+	// cumulative stats
+	totalCacheHits int
 }
 
 func (t *TUI) Run(ctx context.Context) error {
@@ -388,13 +384,6 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.verdicts = msg.result.Verdicts
 			m.scanCount++
 			m.totalCacheHits += msg.result.CacheHits
-			// Accumulate token usage from this scan
-			for _, v := range msg.result.Verdicts {
-				m.totalInputTokens += v.Usage.InputTokens
-				m.totalOutputTokens += v.Usage.OutputTokens
-				m.totalCacheReadTokens += v.Usage.CacheReadInputTokens
-				m.totalCacheCreationTokens += v.Usage.CacheCreationInputTokens
-			}
 
 			m.rebuildGroups()
 			if m.cursor >= len(m.items) {
@@ -813,17 +802,9 @@ func (m *tuiModel) viewVerdictList() string {
 		filterLabel := fmt.Sprintf("f=%s", m.filter)
 		b.WriteString(dimStyle.Render(fmt.Sprintf("Enter/click=jump  →/Tab=actions  1-9=action  t=type  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
 	}
-	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
+	if m.totalCacheHits > 0 {
 		b.WriteString("  ")
-		tokenInfo := fmt.Sprintf("tokens: %s in / %s out",
-			formatTokens(m.totalInputTokens), formatTokens(m.totalOutputTokens))
-		if m.totalCacheReadTokens > 0 {
-			tokenInfo += fmt.Sprintf(" | cached: %s", formatTokens(m.totalCacheReadTokens))
-		}
-		if m.totalCacheHits > 0 {
-			tokenInfo += fmt.Sprintf(" | eval cache: %d", m.totalCacheHits)
-		}
-		b.WriteString(dimStyle.Render(tokenInfo))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("eval cache: %d", m.totalCacheHits)))
 	}
 	if m.scanning {
 		b.WriteString("  ")
@@ -1334,20 +1315,6 @@ func wrapText(s string, maxLen int) []string {
 		runes = runes[cut:]
 	}
 	return lines
-}
-
-// formatTokens formats a token count for display (e.g., "12.3k").
-func formatTokens(n int64) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 10000 {
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	}
-	if n < 1000000 {
-		return fmt.Sprintf("%.0fk", float64(n)/1000)
-	}
-	return fmt.Sprintf("%.1fM", float64(n)/1000000)
 }
 
 // padRight pads a string with spaces to reach the desired visible width.

@@ -9,15 +9,6 @@ import (
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
 
-	if cfg.Provider != "anthropic" {
-		t.Errorf("Provider: got %q, want %q", cfg.Provider, "anthropic")
-	}
-	if cfg.Model != "claude-sonnet-4-5" {
-		t.Errorf("Model: got %q, want %q", cfg.Model, "claude-sonnet-4-5")
-	}
-	if cfg.MaxTokens != 4096 {
-		t.Errorf("MaxTokens: got %d, want %d", cfg.MaxTokens, 4096)
-	}
 	if cfg.Parallel != 10 {
 		t.Errorf("Parallel: got %d, want %d", cfg.Parallel, 10)
 	}
@@ -118,29 +109,6 @@ func TestMatchesExcludeList(t *testing.T) {
 	}
 }
 
-func TestIsAzureEndpoint(t *testing.T) {
-	tests := []struct {
-		url  string
-		want bool
-	}{
-		{"https://myresource.openai.azure.com/openai/v1", true},
-		{"https://myresource.services.ai.azure.com/anthropic/", true},
-		{"https://myresource.azure.us/foo", true},
-		{"https://api.anthropic.com/", false},
-		{"https://api.openai.com/v1", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.url, func(t *testing.T) {
-			got := IsAzureEndpoint(tt.url)
-			if got != tt.want {
-				t.Errorf("IsAzureEndpoint(%q) = %v, want %v", tt.url, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestParseDurationOrDisable(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -174,11 +142,7 @@ func TestLoadFromFile(t *testing.T) {
 	// Create a temp directory with a config file
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".pane-patrol.yaml")
-	content := `provider: openai
-model: gpt-4o-mini
-api_key: test-key-123
-max_tokens: 8192
-parallel: 5
+	content := `parallel: 5
 refresh: "10s"
 exclude_sessions:
   - "AIGGTM-*"
@@ -197,12 +161,9 @@ auto_nudge_max_risk: medium
 
 	// Clear env vars that might interfere
 	for _, key := range []string{
-		"PANE_PATROL_PROVIDER", "PANE_PATROL_MODEL", "PANE_PATROL_API_KEY",
-		"PANE_PATROL_BASE_URL", "PANE_PATROL_MAX_TOKENS", "PANE_PATROL_FILTER",
+		"PANE_PATROL_FILTER",
 		"PANE_PATROL_REFRESH", "PANE_PATROL_CACHE_TTL", "PANE_PATROL_EXCLUDE_SESSIONS",
 		"PANE_PATROL_AUTO_NUDGE", "PANE_PATROL_AUTO_NUDGE_MAX_RISK",
-		"AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-		"AZURE_RESOURCE_NAME",
 	} {
 		t.Setenv(key, "")
 	}
@@ -212,18 +173,6 @@ auto_nudge_max_risk: medium
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Provider != "openai" {
-		t.Errorf("Provider: got %q, want %q", cfg.Provider, "openai")
-	}
-	if cfg.Model != "gpt-4o-mini" {
-		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4o-mini")
-	}
-	if cfg.APIKey != "test-key-123" {
-		t.Errorf("APIKey: got %q, want %q", cfg.APIKey, "test-key-123")
-	}
-	if cfg.MaxTokens != 8192 {
-		t.Errorf("MaxTokens: got %d, want %d", cfg.MaxTokens, 8192)
-	}
 	if cfg.Parallel != 5 {
 		t.Errorf("Parallel: got %d, want %d", cfg.Parallel, 5)
 	}
@@ -245,9 +194,8 @@ func TestEnvOverridesFile(t *testing.T) {
 	// Create a temp directory with a config file
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".pane-patrol.yaml")
-	content := `provider: openai
-model: gpt-4o-mini
-api_key: file-key
+	content := `parallel: 5
+refresh: "10s"
 `
 	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -259,32 +207,25 @@ api_key: file-key
 
 	// Clear interfering env vars, then set the ones we want
 	for _, key := range []string{
-		"PANE_PATROL_BASE_URL", "PANE_PATROL_MAX_TOKENS", "PANE_PATROL_FILTER",
+		"PANE_PATROL_FILTER",
 		"PANE_PATROL_REFRESH", "PANE_PATROL_CACHE_TTL", "PANE_PATROL_EXCLUDE_SESSIONS",
 		"PANE_PATROL_AUTO_NUDGE", "PANE_PATROL_AUTO_NUDGE_MAX_RISK",
-		"AZURE_OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-		"AZURE_RESOURCE_NAME",
 	} {
 		t.Setenv(key, "")
 	}
 
 	// Env should override file
-	t.Setenv("PANE_PATROL_PROVIDER", "anthropic")
-	t.Setenv("PANE_PATROL_MODEL", "claude-sonnet-4-5")
-	t.Setenv("PANE_PATROL_API_KEY", "env-key")
+	t.Setenv("PANE_PATROL_REFRESH", "30s")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Provider != "anthropic" {
-		t.Errorf("Provider: got %q, want %q (env should override file)", cfg.Provider, "anthropic")
+	if cfg.Refresh != "30s" {
+		t.Errorf("Refresh: got %q, want %q (env should override file)", cfg.Refresh, "30s")
 	}
-	if cfg.Model != "claude-sonnet-4-5" {
-		t.Errorf("Model: got %q, want %q (env should override file)", cfg.Model, "claude-sonnet-4-5")
-	}
-	if cfg.APIKey != "env-key" {
-		t.Errorf("APIKey: got %q, want %q (env should override file)", cfg.APIKey, "env-key")
+	if cfg.Parallel != 5 {
+		t.Errorf("Parallel: got %d, want %d (file value should be kept)", cfg.Parallel, 5)
 	}
 }

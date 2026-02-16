@@ -22,13 +22,6 @@ import (
 
 // Config holds all pane-supervisor configuration.
 type Config struct {
-	// LLM settings
-	Provider  string `yaml:"provider"`
-	Model     string `yaml:"model"`
-	BaseURL   string `yaml:"base_url"`
-	APIKey    string `yaml:"api_key"`
-	MaxTokens int64  `yaml:"max_tokens"`
-
 	// Scan settings
 	Filter   string `yaml:"filter"`
 	Parallel int    `yaml:"parallel"`
@@ -59,12 +52,9 @@ type Config struct {
 // Defaults returns a Config with all default values.
 func Defaults() *Config {
 	return &Config{
-		Provider:  "anthropic",
-		Model:     "claude-sonnet-4-5",
-		MaxTokens: 4096,
-		Parallel:  10,
-		Refresh:   "5s",
-		CacheTTL:  "2m",
+		Parallel: 10,
+		Refresh:  "5s",
+		CacheTTL: "2m",
 	}
 }
 
@@ -131,21 +121,6 @@ func findConfigFile() (string, []byte, error) {
 
 // mergeFile applies non-zero file values onto cfg.
 func mergeFile(cfg *Config, file *Config) {
-	if file.Provider != "" {
-		cfg.Provider = file.Provider
-	}
-	if file.Model != "" {
-		cfg.Model = file.Model
-	}
-	if file.BaseURL != "" {
-		cfg.BaseURL = file.BaseURL
-	}
-	if file.APIKey != "" {
-		cfg.APIKey = file.APIKey
-	}
-	if file.MaxTokens > 0 {
-		cfg.MaxTokens = file.MaxTokens
-	}
 	if file.Filter != "" {
 		cfg.Filter = file.Filter
 	}
@@ -177,18 +152,6 @@ func mergeFile(cfg *Config, file *Config) {
 
 // mergeEnv applies environment variables onto cfg. Env always wins.
 func mergeEnv(cfg *Config) {
-	if v := os.Getenv("PANE_PATROL_PROVIDER"); v != "" {
-		cfg.Provider = v
-	}
-	if v := os.Getenv("PANE_PATROL_MODEL"); v != "" {
-		cfg.Model = v
-	}
-	if v := os.Getenv("PANE_PATROL_BASE_URL"); v != "" {
-		cfg.BaseURL = v
-	}
-	if v := os.Getenv("PANE_PATROL_API_KEY"); v != "" {
-		cfg.APIKey = v
-	}
 	if v := os.Getenv("PANE_PATROL_FILTER"); v != "" {
 		cfg.Filter = v
 	}
@@ -212,43 +175,6 @@ func mergeEnv(cfg *Config) {
 	}
 	if v := os.Getenv("OTEL_EXPORTER_OTLP_HEADERS"); v != "" {
 		cfg.OTELHeaders = v
-	}
-
-	resolveAPIKeyAndBaseURL(cfg)
-}
-
-// resolveAPIKeyAndBaseURL fills in API key from provider-specific env vars
-// and resolves Azure base URL from AZURE_RESOURCE_NAME. This is the shared
-// logic used by both mergeEnv (config.Load path) and ResolveEnvDefaults
-// (CLI flag path).
-func resolveAPIKeyAndBaseURL(cfg *Config) {
-	// API key fallbacks: Azure > Anthropic > OpenAI
-	if cfg.APIKey == "" {
-		if v := os.Getenv("AZURE_OPENAI_API_KEY"); v != "" {
-			cfg.APIKey = v
-		}
-	}
-	if cfg.APIKey == "" {
-		if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
-			cfg.APIKey = v
-		}
-	}
-	if cfg.APIKey == "" {
-		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-			cfg.APIKey = v
-		}
-	}
-
-	// Azure base URL: derive from AZURE_RESOURCE_NAME when no explicit base URL
-	if cfg.BaseURL == "" {
-		if rn := os.Getenv("AZURE_RESOURCE_NAME"); rn != "" {
-			switch cfg.Provider {
-			case "anthropic":
-				cfg.BaseURL = fmt.Sprintf("https://%s.services.ai.azure.com/anthropic/", rn)
-			case "openai":
-				cfg.BaseURL = fmt.Sprintf("https://%s.openai.azure.com/openai/v1", rn)
-			}
-		}
 	}
 }
 
@@ -278,27 +204,4 @@ func MatchesExcludeList(name string, patterns []string) bool {
 		}
 	}
 	return false
-}
-
-// ResolveEnvDefaults applies environment variable defaults to a Config that
-// was built from CLI flags (not from config.Load). This fills in API key
-// fallbacks and Azure base URL resolution — the same logic Load() applies
-// via mergeEnv, but usable standalone for the check/scan commands.
-func ResolveEnvDefaults(cfg *Config) {
-	// Default model per provider
-	if cfg.Model == "" {
-		switch cfg.Provider {
-		case "anthropic":
-			cfg.Model = "claude-sonnet-4-5"
-		case "openai":
-			cfg.Model = "gpt-4o-mini"
-		}
-	}
-
-	resolveAPIKeyAndBaseURL(cfg)
-}
-
-// IsAzureEndpoint returns true if the URL is an Azure endpoint.
-func IsAzureEndpoint(url string) bool {
-	return len(url) > 0 && (strings.Contains(url, ".azure.com") || strings.Contains(url, ".azure.us"))
 }

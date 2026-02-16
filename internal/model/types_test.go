@@ -103,25 +103,6 @@ func TestVerdict_RecommendedZeroInJSON(t *testing.T) {
 	}
 }
 
-func TestLLMVerdict_RecommendedZeroInJSON(t *testing.T) {
-	v := LLMVerdict{
-		Agent:       "claude_code",
-		Blocked:     true,
-		Reason:      "permission dialog",
-		Actions:     []Action{{Keys: "y", Label: "approve", Risk: "medium"}},
-		Recommended: 0,
-	}
-
-	data, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("Marshal error: %v", err)
-	}
-
-	if !strings.Contains(string(data), `"recommended":0`) {
-		t.Errorf("JSON output missing \"recommended\":0, got: %s", string(data))
-	}
-}
-
 func TestVerdict_WaitingForInJSON(t *testing.T) {
 	v := Verdict{
 		Agent:      "opencode",

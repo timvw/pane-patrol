@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/timvw/pane-patrol/internal/config"
-	"github.com/timvw/pane-patrol/internal/evaluator"
 	"github.com/timvw/pane-patrol/internal/model"
 	"github.com/timvw/pane-patrol/internal/mux"
 	ppotel "github.com/timvw/pane-patrol/internal/otel"
@@ -26,7 +25,6 @@ var tracer = otel.Tracer("pane-supervisor")
 // Scanner wraps the pane-patrol scan functionality for use by the supervisor.
 type Scanner struct {
 	Mux             mux.Multiplexer
-	Evaluator       evaluator.Evaluator
 	Parsers         *parser.Registry // Deterministic parsers for known agents; nil disables
 	Filter          string
 	ExcludeSessions []string // Session names to exclude from scanning (exact match)
@@ -106,17 +104,10 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: pane %s: %v\n", p.Target, err)
 				s.Metrics.RecordEvaluation(ctx, "error")
-				evalModel, evalProvider := "", ""
-				if s.Evaluator != nil {
-					evalModel = s.Evaluator.Model()
-					evalProvider = s.Evaluator.Provider()
-				}
 				v := model.BaseVerdict(p, start)
 				v.Agent = "error"
 				v.Reason = fmt.Sprintf("evaluation failed: %v", err)
 				v.EvalSource = model.EvalSourceError
-				v.Model = evalModel
-				v.Provider = evalProvider
 				verdicts[idx] = v
 				return
 			}
@@ -136,24 +127,15 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 
 	// Record span attributes for the completed scan
 	blocked := 0
-	var totalIn, totalOut, totalCacheRead, totalCacheCreation int64
 	for _, v := range verdicts {
 		if v.Blocked {
 			blocked++
 		}
-		totalIn += v.Usage.InputTokens
-		totalOut += v.Usage.OutputTokens
-		totalCacheRead += v.Usage.CacheReadInputTokens
-		totalCacheCreation += v.Usage.CacheCreationInputTokens
 	}
 	span.SetAttributes(
 		attribute.Int("panes.total", len(verdicts)),
 		attribute.Int("panes.blocked", blocked),
 		attribute.Int("cache.hits", int(cacheHits)),
-		attribute.Int64("tokens.input", totalIn),
-		attribute.Int64("tokens.output", totalOut),
-		attribute.Int64("tokens.cache_read", totalCacheRead),
-		attribute.Int64("tokens.cache_creation", totalCacheCreation),
 	)
 
 	return result, nil
@@ -191,8 +173,6 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		if cached, ok := s.Cache.Lookup(pane.Target, content); ok {
 			cached.DurationMs = time.Since(start).Milliseconds()
 			cached.EvalSource = model.EvalSourceCache
-			// Zero out usage for cache hits — no LLM call was made
-			cached.Usage = model.TokenUsage{}
 
 			// Set output for Langfuse even on cache hits
 			cachedOutput := map[string]any{
@@ -215,8 +195,8 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		}
 	}
 
-	// --- Tier 1: Deterministic parser for known agents ---
-	// Try parsers first — instant, free, 100% accurate for known agents.
+	// --- Deterministic parser for known agents ---
+	// Try parsers — instant, free, 100% accurate for known agents.
 	if s.Parsers != nil {
 		if parsed := s.Parsers.Parse(capture, pane.ProcessTree); parsed != nil {
 			v := model.BaseVerdict(pane, start)
@@ -228,8 +208,6 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 			v.Actions = parsed.Actions
 			v.Recommended = parsed.Recommended
 			v.EvalSource = model.EvalSourceParser
-			v.Model = "deterministic"
-			v.Provider = "parser"
 			verdict := &v
 
 			if s.Verbose {
@@ -270,47 +248,26 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		}
 	}
 
-	// --- Tier 2: LLM fallback for unrecognized agents ---
-	if s.Evaluator == nil {
-		return nil, fmt.Errorf("no deterministic parser matched and no API key configured for LLM fallback")
-	}
-	// Record cache miss only when falling through to LLM (parser hits are
-	// not cache misses in the meaningful sense — they bypass both caches).
-	s.Metrics.RecordCacheMiss(ctx)
-	llmVerdict, err := s.Evaluator.Evaluate(ctx, content)
-	if err != nil {
-		return nil, fmt.Errorf("evaluation failed: %w", err)
-	}
-
+	// --- No parser matched — return unknown verdict ---
 	v := model.BaseVerdict(pane, start)
-	v.Agent = llmVerdict.Agent
-	v.Blocked = llmVerdict.Blocked
-	v.Reason = llmVerdict.Reason
-	v.WaitingFor = llmVerdict.WaitingFor
-	v.Reasoning = llmVerdict.Reasoning
-	v.Actions = llmVerdict.Actions
-	v.Recommended = llmVerdict.Recommended
-	v.Usage = llmVerdict.Usage
-	v.EvalSource = model.EvalSourceLLM
-	v.Model = s.Evaluator.Model()
-	v.Provider = s.Evaluator.Provider()
+	v.Agent = "unknown"
+	v.Blocked = false
+	v.Reason = "not recognized by deterministic parsers"
+	v.EvalSource = model.EvalSourceParser
 	verdict := &v
 
 	if s.Verbose {
 		verdict.Content = content
 	}
 
-	// Set the verdict as the observation output for Langfuse
-	verdictOutput := map[string]any{
-		"agent":       verdict.Agent,
-		"blocked":     verdict.Blocked,
-		"reason":      verdict.Reason,
-		"waiting_for": verdict.WaitingFor,
-		"reasoning":   verdict.Reasoning,
-		"actions":     verdict.Actions,
-		"recommended": verdict.Recommended,
+	// Langfuse output for unknown results
+	unknownOutput := map[string]any{
+		"agent":   verdict.Agent,
+		"blocked": verdict.Blocked,
+		"reason":  verdict.Reason,
+		"source":  "parser_fallthrough",
 	}
-	if outputJSON, err := json.Marshal(verdictOutput); err == nil {
+	if outputJSON, err := json.Marshal(unknownOutput); err == nil {
 		span.SetAttributes(attribute.String("langfuse.observation.output", string(outputJSON)))
 	}
 
@@ -319,23 +276,12 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		attribute.Bool("parser.hit", false),
 		attribute.String("verdict.agent", verdict.Agent),
 		attribute.Bool("verdict.blocked", verdict.Blocked),
-		attribute.Int64("tokens.input", verdict.Usage.InputTokens),
-		attribute.Int64("tokens.output", verdict.Usage.OutputTokens),
-		attribute.Int64("tokens.cache_read", verdict.Usage.CacheReadInputTokens),
-		attribute.Int64("tokens.cache_creation", verdict.Usage.CacheCreationInputTokens),
-
-		// Langfuse filterable metadata for verdict results
 		attribute.String("langfuse.observation.metadata.verdict_agent", verdict.Agent),
 		attribute.String("langfuse.observation.metadata.verdict_blocked", fmt.Sprintf("%v", verdict.Blocked)),
-		attribute.String("langfuse.observation.metadata.verdict_reason", verdict.Reason),
+		attribute.String("langfuse.observation.metadata.verdict_source", "parser_fallthrough"),
 	)
 
-	s.Metrics.RecordEvaluation(ctx, "llm")
-	s.Metrics.RecordTokens(ctx,
-		s.Evaluator.Provider(), s.Evaluator.Model(),
-		verdict.Usage.InputTokens, verdict.Usage.OutputTokens,
-		verdict.Usage.CacheReadInputTokens, verdict.Usage.CacheCreationInputTokens,
-	)
+	s.Metrics.RecordEvaluation(ctx, "parser")
 
 	// Store in cache for future scans
 	if s.Cache != nil {
