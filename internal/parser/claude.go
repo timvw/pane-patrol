@@ -109,15 +109,7 @@ func (p *ClaudeCodeParser) parsePermissionDialog(content string) *Result {
 		return nil
 	}
 
-	var waitingFor string
-	if hasPermission {
-		waitingFor = extractBlock(content, "Claude needs your permission")
-	} else {
-		// "Claude needs your permission" may have scrolled off screen.
-		// Look backwards from "Do you want to proceed?" to capture context
-		// (tool name, command, file path) that appears above the prompt.
-		waitingFor = extractBlockWithContext(content, "Do you want to proceed?", 6)
-	}
+	waitingFor := p.extractPermissionSummary(content, hasPermission)
 
 	// Determine if "don't ask again" option is available
 	hasDontAsk := strings.Contains(content, "don't ask again") ||
@@ -152,7 +144,7 @@ func (p *ClaudeCodeParser) parseEditApproval(content string) *Result {
 		return nil
 	}
 
-	waitingFor := extractBlock(content, "Do you want to make this edit to")
+	waitingFor := p.extractEditSummary(content)
 
 	return &Result{
 		Agent:      "claude_code",
@@ -225,6 +217,112 @@ func (p *ClaudeCodeParser) isActiveExecution(content string) bool {
 		}
 	}
 	return false
+}
+
+// extractPermissionSummary produces a structured WaitingFor like:
+//
+//	"Bash — $ git -C /path log --oneline"
+//	"Read — /etc/hosts"
+//	"Write — src/main.go"
+//
+// When "Claude needs your permission to use {tool}" is visible, extracts
+// the tool name and any detail lines (commands, file paths) between the
+// permission header and "Do you want to proceed?". When the header has
+// scrolled off, falls back to context lines above "Do you want to proceed?".
+func (p *ClaudeCodeParser) extractPermissionSummary(content string, hasPermission bool) string {
+	lines := strings.Split(content, "\n")
+
+	// Try to extract tool name from "Claude needs your permission to use {tool}"
+	var toolName string
+	var permIdx int = -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "Claude needs your permission to use") {
+			permIdx = i
+			// Extract tool name after "to use "
+			if idx := strings.Index(trimmed, "to use "); idx >= 0 {
+				toolName = strings.TrimSpace(trimmed[idx+7:])
+			}
+			break
+		}
+	}
+
+	// Find "Do you want to proceed?" to know where the dialog options start
+	var proceedIdx int = -1
+	for i, line := range lines {
+		if strings.Contains(line, "Do you want to proceed?") {
+			proceedIdx = i
+			break
+		}
+	}
+
+	// Collect detail lines between the permission header and proceed prompt.
+	// These contain commands ($ git ...), file paths, descriptions, etc.
+	var details []string
+	startIdx := permIdx + 1
+	if permIdx < 0 {
+		// Header scrolled off — look backwards from "Do you want to proceed?"
+		if proceedIdx > 0 {
+			for i := proceedIdx - 1; i >= 0 && len(details) < 6; i-- {
+				trimmed := strings.TrimSpace(lines[i])
+				if trimmed == "" && len(details) > 0 {
+					break
+				}
+				if trimmed != "" {
+					details = append(details, trimmed)
+				}
+			}
+			// Reverse (collected bottom-up)
+			for i, j := 0, len(details)-1; i < j; i, j = i+1, j-1 {
+				details[i], details[j] = details[j], details[i]
+			}
+		}
+	} else {
+		endIdx := proceedIdx
+		if endIdx < 0 {
+			endIdx = len(lines)
+		}
+		for i := startIdx; i < endIdx && len(details) < 6; i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			if trimmed != "" {
+				details = append(details, trimmed)
+			}
+		}
+	}
+
+	// Build summary: "Tool — detail" or just the detail lines
+	detail := strings.Join(details, "\n")
+	if toolName != "" && detail != "" {
+		return toolName + " — " + detail
+	}
+	if toolName != "" {
+		return toolName
+	}
+	if detail != "" {
+		return detail
+	}
+	return "permission dialog"
+}
+
+// extractEditSummary produces a WaitingFor like:
+//
+//	"Edit — src/main.go"
+//
+// from "Do you want to make this edit to {filename}?"
+func (p *ClaudeCodeParser) extractEditSummary(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.Index(trimmed, "Do you want to make this edit to "); idx >= 0 {
+			// Extract filename after "to " and before "?"
+			rest := trimmed[idx+len("Do you want to make this edit to "):]
+			rest = strings.TrimSuffix(rest, "?")
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				return "Edit — " + rest
+			}
+		}
+	}
+	return extractBlock(content, "Do you want to make this edit to")
 }
 
 func (p *ClaudeCodeParser) hasNumberedOptions(content string) bool {

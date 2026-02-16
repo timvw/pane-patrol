@@ -184,6 +184,16 @@ func TestClaude_PermissionDialog(t *testing.T) {
 	if !result.Actions[0].Raw {
 		t.Error("first action should be Raw=true for Claude Code")
 	}
+	// WaitingFor should show "Read — Read file: /etc/hosts"
+	if !contains(result.WaitingFor, "Read") {
+		t.Errorf("WaitingFor should contain tool name, got: %q", result.WaitingFor)
+	}
+	if !contains(result.WaitingFor, "/etc/hosts") {
+		t.Errorf("WaitingFor should contain file path, got: %q", result.WaitingFor)
+	}
+	if !contains(result.WaitingFor, "—") {
+		t.Errorf("WaitingFor should contain dash separator, got: %q", result.WaitingFor)
+	}
 }
 
 func TestClaude_EditApproval(t *testing.T) {
@@ -206,6 +216,10 @@ func TestClaude_EditApproval(t *testing.T) {
 	}
 	if result.Actions[0].Keys != "y" {
 		t.Errorf("first action keys: got %q, want %q", result.Actions[0].Keys, "y")
+	}
+	// WaitingFor should show "Edit — src/main.go"
+	if result.WaitingFor != "Edit — src/main.go" {
+		t.Errorf("WaitingFor: got %q, want %q", result.WaitingFor, "Edit — src/main.go")
 	}
 }
 
@@ -615,12 +629,39 @@ func TestExtractBlockWithContext(t *testing.T) {
 	}
 }
 
+func TestClaude_PermissionBashCommand(t *testing.T) {
+	// Full Bash permission dialog with tool name and command visible.
+	content := `
+  Claude needs your permission to use Bash
+
+  $ git -C /home/user/project log --oneline -10
+
+  Do you want to proceed?
+  ❯ 1. Yes  2. Yes, and don't ask again  3. No
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	// Should show "Bash — $ git -C /home/user/project log --oneline -10"
+	if !contains(result.WaitingFor, "Bash") {
+		t.Errorf("WaitingFor should start with tool name, got: %q", result.WaitingFor)
+	}
+	if !contains(result.WaitingFor, "—") {
+		t.Errorf("WaitingFor should contain separator, got: %q", result.WaitingFor)
+	}
+	if !contains(result.WaitingFor, "git -C") {
+		t.Errorf("WaitingFor should contain the command, got: %q", result.WaitingFor)
+	}
+}
+
 func TestClaude_PermissionScrolledOff(t *testing.T) {
 	// When "Claude needs your permission" has scrolled off, only
 	// "Do you want to proceed?" is visible. The WaitingFor should
 	// still include context lines above it (tool name, command).
 	content := `
-  Bash: git log --oneline -10
+  $ git log --oneline -10
   Working directory: /home/user/project
 
   Do you want to proceed?
