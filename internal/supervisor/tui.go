@@ -149,6 +149,14 @@ type tuiModel struct {
 	// text input state (rendered inline in the action panel)
 	textInput textinput.Model
 
+	// Buffered selection state for question dialogs.
+	// All toggles and text input are accumulated locally and only sent to
+	// the target pane on explicit Submit. This allows the user to review
+	// and correct their selections before committing.
+	localChecks   map[int]bool // desired checked state per option index (multi-select)
+	initialChecks map[int]bool // initial state from parser (for computing diff on submit)
+	localTarget   string       // pane ID the buffered state belongs to (reset on switch)
+
 	// layout (computed in viewVerdictList, used for mouse hit testing)
 	actionPanelX int // X offset where the action panel starts
 
@@ -346,6 +354,103 @@ func (m *tuiModel) clampActionCursor() {
 	}
 }
 
+// submitBufferedSelection compiles the buffered local selection state into a
+// sequence of keystrokes and sends them to the target pane in one batch.
+// For each option whose checked state changed from the initial parser state,
+// it sends the toggle key. If the custom answer option is checked and has
+// text, it sends the activation key + text + Enter. Finally it sends Enter
+// to submit the selection.
+func (m *tuiModel) submitBufferedSelection() tea.Cmd {
+	v := m.selectedVerdict()
+	if v == nil {
+		return nil
+	}
+	target := v.Target
+
+	// Compute toggle diff: send keys only for options that changed.
+	// Sort by index to send in order (deterministic, matches agent's UI).
+	var toggleIdxs []int
+	for i, desired := range m.localChecks {
+		if desired != m.initialChecks[i] {
+			toggleIdxs = append(toggleIdxs, i)
+		}
+	}
+	sort.Ints(toggleIdxs)
+
+	// Find custom answer option index (if any)
+	customIdx := -1
+	for i := range v.Actions {
+		if isCustomAnswerAction(v.Actions[i]) {
+			customIdx = i
+			break
+		}
+	}
+
+	customText := strings.TrimSpace(m.textInput.Value())
+
+	// Send toggle keys for regular options (not the custom answer)
+	for _, idx := range toggleIdxs {
+		if idx == customIdx {
+			continue // handle custom answer separately below
+		}
+		if idx < len(v.Actions) {
+			if err := NudgePane(target, v.Actions[idx].Keys, v.Actions[idx].Raw); err != nil {
+				m.message = fmt.Sprintf("Toggle option %d failed: %v", idx+1, err)
+				// Continue with remaining toggles
+			}
+		}
+	}
+
+	// Send custom answer if checked and has text
+	if customIdx >= 0 && m.localChecks[customIdx] && customText != "" {
+		a := v.Actions[customIdx]
+		if err := NudgePane(target, a.Keys, a.Raw); err != nil {
+			m.message = fmt.Sprintf("Custom answer activate failed: %v", err)
+		} else if err := NudgePane(target, customText, false); err != nil {
+			m.message = fmt.Sprintf("Custom answer text failed: %v", err)
+		} else if err := NudgePane(target, "Enter", true); err != nil {
+			m.message = fmt.Sprintf("Custom answer confirm failed: %v", err)
+		}
+	} else if customIdx >= 0 && m.localChecks[customIdx] != m.initialChecks[customIdx] {
+		// Custom option toggled but no text — just toggle the checkbox
+		a := v.Actions[customIdx]
+		if err := NudgePane(target, a.Keys, a.Raw); err != nil {
+			m.message = fmt.Sprintf("Toggle custom option failed: %v", err)
+		}
+	}
+
+	// Send Enter to submit the selection
+	if err := NudgePane(target, "Enter", true); err != nil {
+		m.message = fmt.Sprintf("Submit failed: %v", err)
+	} else if m.message == "" {
+		// Build summary of selections
+		var selected []string
+		for i := 0; i < len(v.Actions); i++ {
+			if m.localChecks[i] && isToggleAction(v.Actions[i]) {
+				selected = append(selected, fmt.Sprintf("%d", i+1))
+			}
+		}
+		summary := strings.Join(selected, ",")
+		if customText != "" {
+			summary += "+text"
+		}
+		m.message = fmt.Sprintf("Submitted [%s] to %s", summary, target)
+	}
+
+	// Clean up
+	if m.scanner.Cache != nil {
+		m.scanner.Cache.Invalidate(target)
+		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
+	}
+	m.editing = false
+	m.textInput.Blur()
+	m.textInput.SetValue("")
+	m.resetLocalChecks()
+	m.focus = panelList
+	m.scanning = true
+	return m.doScan()
+}
+
 // executeSelectedAction sends the currently highlighted action to the target pane
 // and triggers a rescan. Does NOT auto-jump to the target pane — the user stays
 // in the supervisor TUI and can see the status message. Manual navigation via
@@ -385,13 +490,8 @@ func (m *tuiModel) executeSelectedAction() tea.Cmd {
 		m.scanner.Cache.Invalidate(v.Target)
 		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 	}
-	// For multi-select toggles, keep focus on the action panel so the user
-	// can continue toggling options. For all other actions, return to list.
-	if isMultiSelectQuestion(v) && isToggleAction(action) {
-		// Stay on the action panel — user is still toggling checkboxes
-	} else {
-		m.focus = panelList
-	}
+	m.resetLocalChecks()
+	m.focus = panelList
 	m.scanning = true
 	return m.doScan()
 }
@@ -539,9 +639,19 @@ func (m *tuiModel) handleActionPanelClick(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 
-	// Execute the clicked action directly
 	m.actionCursor = actionIdx
 	m.focus = panelActions
+	// Multi-select: clicking a toggle option toggles locally, not immediately
+	if isMultiSelectQuestion(v) {
+		m.initLocalChecks(v)
+		if isToggleAction(v.Actions[actionIdx]) {
+			m.localChecks[actionIdx] = !m.localChecks[actionIdx]
+			return m, nil
+		}
+		if v.Actions[actionIdx].Label == "submit selection" {
+			return m, m.submitBufferedSelection()
+		}
+	}
 	return m, m.executeSelectedAction()
 }
 
@@ -558,6 +668,7 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 			m.actionCursor = 0
+			m.resetLocalChecks()
 			m.clampActionCursor()
 		}
 
@@ -569,6 +680,7 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 			m.actionCursor = 0
+			m.resetLocalChecks()
 			m.clampActionCursor()
 		}
 
@@ -599,6 +711,10 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v := m.selectedVerdict()
 			if v != nil {
 				m.actionCursor = v.Recommended
+				// Initialize buffered selection state for multi-select
+				if isMultiSelectQuestion(v) {
+					m.initLocalChecks(v)
+				}
 				// Auto-activate text input for custom answer dialogs
 				if hasQuestionWithCustomAnswer(v) {
 					m.editing = true
@@ -648,7 +764,8 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		// Quick-execute the Nth action for the currently selected pane
+		// Quick-execute the Nth action for the currently selected pane.
+		// For multi-select questions, move focus to action panel and toggle locally.
 		v := m.selectedVerdict()
 		if v == nil || !v.Blocked {
 			return m, nil
@@ -658,6 +775,12 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.actionCursor = idx
+		if isMultiSelectQuestion(v) && isToggleAction(v.Actions[idx]) {
+			m.focus = panelActions
+			m.initLocalChecks(v)
+			m.localChecks[idx] = !m.localChecks[idx]
+			return m, nil
+		}
 		return m, m.executeSelectedAction()
 
 	case "t":
@@ -715,7 +838,8 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc", "escape", "left", "h":
-		// Return focus to the list panel
+		// Return focus to the list panel, discard buffered selections
+		m.resetLocalChecks()
 		m.focus = panelList
 		return m, nil
 
@@ -731,15 +855,28 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter":
+		v := m.selectedVerdict()
+		if v != nil && isMultiSelectQuestion(v) {
+			// Multi-select: Enter on a toggle action toggles locally;
+			// Enter on Submit compiles and sends the buffered selection.
+			if m.actionCursor < len(v.Actions) && isToggleAction(v.Actions[m.actionCursor]) {
+				m.localChecks[m.actionCursor] = !m.localChecks[m.actionCursor]
+				return m, nil
+			}
+			// Submit or Dismiss — submit sends buffered diff
+			if m.actionCursor < len(v.Actions) && v.Actions[m.actionCursor].Label == "submit selection" {
+				return m, m.submitBufferedSelection()
+			}
+		}
 		return m, m.executeSelectedAction()
 
 	case " ":
-		// Spacebar toggles the current item in multi-select checklists.
+		// Spacebar toggles the current item locally in multi-select checklists.
 		v := m.selectedVerdict()
 		if v != nil && isMultiSelectQuestion(v) && m.actionCursor < len(v.Actions) {
-			action := v.Actions[m.actionCursor]
-			if isToggleAction(action) {
-				return m, m.executeSelectedAction()
+			if isToggleAction(v.Actions[m.actionCursor]) {
+				m.localChecks[m.actionCursor] = !m.localChecks[m.actionCursor]
+				return m, nil
 			}
 		}
 		return m, nil
@@ -754,6 +891,11 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.actionCursor = idx
+		// Multi-select questions: toggle locally, don't send to pane
+		if isMultiSelectQuestion(v) && isToggleAction(v.Actions[idx]) {
+			m.localChecks[idx] = !m.localChecks[idx]
+			return m, nil
+		}
 		return m, m.executeSelectedAction()
 
 	case "t":
@@ -781,11 +923,13 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleInlineTextInputKey handles keys when the inline text input is active
 // in the action panel. Most keys are forwarded to the text input widget, but
 // certain keys are intercepted to allow interaction with the action panel:
-//   - Number keys 1-9: toggle checkboxes (multi-select) or execute actions
+//   - Number keys 1-9: toggle local checkboxes (multi-select) or move cursor
 //   - Arrow keys up/down: navigate the action cursor
-//   - Space: toggle current checkbox (multi-select)
-//   - Enter: submit text (if non-empty) or submit selection (if empty)
-//   - Escape: close text input and return to list
+//   - Space: toggle current checkbox locally (multi-select)
+//   - Enter: submit buffered selection (multi-select) or text (single-select)
+//   - Escape: discard changes and return to list
+//
+// All toggles are buffered locally and only sent to the target pane on Enter.
 func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
@@ -795,6 +939,7 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		m.editing = false
 		m.textInput.Blur()
 		m.textInput.SetValue("")
+		m.resetLocalChecks()
 		m.focus = panelList
 		return m, nil
 
@@ -819,21 +964,12 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		return m, nil
 
 	case " ":
-		// Space toggles the current checkbox in multi-select
+		// Space toggles the current checkbox locally in multi-select
 		v := m.selectedVerdict()
 		if v != nil && isMultiSelectQuestion(v) && m.actionCursor < len(v.Actions) {
-			action := v.Actions[m.actionCursor]
-			if isToggleAction(action) {
-				err := NudgePane(v.Target, action.Keys, action.Raw)
-				if err != nil {
-					m.message = fmt.Sprintf("Nudge failed: %v", err)
-				}
-				if m.scanner.Cache != nil {
-					m.scanner.Cache.Invalidate(v.Target)
-					m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
-				}
-				m.scanning = true
-				return m, m.doScan()
+			if isToggleAction(v.Actions[m.actionCursor]) {
+				m.localChecks[m.actionCursor] = !m.localChecks[m.actionCursor]
+				return m, nil
 			}
 		}
 		// Otherwise forward space to text input
@@ -842,32 +978,29 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		return m, cmd
 
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		// Number keys toggle checkboxes / execute actions
+		// Number keys toggle checkboxes locally (multi-select) or
+		// move cursor (single-select). Never send to pane directly.
 		v := m.selectedVerdict()
 		if v != nil && v.Blocked {
 			idx := int(msg.String()[0] - '1')
 			if idx < len(v.Actions) {
-				action := v.Actions[idx]
 				m.actionCursor = idx
-				err := NudgePane(v.Target, action.Keys, action.Raw)
-				if err != nil {
-					m.message = fmt.Sprintf("Nudge failed: %v", err)
-				} else {
-					m.message = fmt.Sprintf("Sent '%s' to %s (%s)", action.Keys, v.Target, action.Label)
+				if isMultiSelectQuestion(v) && isToggleAction(v.Actions[idx]) {
+					m.localChecks[idx] = !m.localChecks[idx]
 				}
-				if m.scanner.Cache != nil {
-					m.scanner.Cache.Invalidate(v.Target)
-					m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
-				}
-				m.scanning = true
-				return m, m.doScan()
+				// Single-select: just move cursor, don't send
 			}
 		}
 		return m, nil
 
 	case "enter":
-		text := m.textInput.Value()
 		v := m.selectedVerdict()
+		// Multi-select: Enter submits the buffered selection
+		if v != nil && isMultiSelectQuestion(v) {
+			return m, m.submitBufferedSelection()
+		}
+		// Single-select / custom answer: send text if present
+		text := m.textInput.Value()
 		if text != "" && v != nil {
 			target := v.Target
 
@@ -903,6 +1036,7 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		m.editing = false
 		m.textInput.Blur()
 		m.textInput.SetValue("")
+		m.resetLocalChecks()
 		// Rescan after sending input
 		m.scanning = true
 		return m, m.doScan()
@@ -1421,6 +1555,32 @@ func isMultiSelectQuestion(v *model.Verdict) bool {
 	return strings.Contains(v.WaitingFor, "[ ]") || strings.Contains(v.WaitingFor, "[✓]")
 }
 
+// initLocalChecks initializes the buffered selection state for a multi-select
+// question verdict. It parses the initial checked state from WaitingFor and
+// copies it into both localChecks (mutable) and initialChecks (immutable).
+// Callers must check isMultiSelectQuestion before calling.
+func (m *tuiModel) initLocalChecks(v *model.Verdict) {
+	if v == nil || m.localTarget == v.Target {
+		return // already initialized for this verdict
+	}
+	m.localTarget = v.Target
+	m.localChecks = make(map[int]bool)
+	m.initialChecks = make(map[int]bool)
+	_, items := parseChecklist(v.WaitingFor)
+	for i, item := range items {
+		m.localChecks[i] = item.checked
+		m.initialChecks[i] = item.checked
+	}
+}
+
+// resetLocalChecks clears the buffered selection state. Called on submit,
+// dismiss, or when switching to a different verdict.
+func (m *tuiModel) resetLocalChecks() {
+	m.localChecks = nil
+	m.initialChecks = nil
+	m.localTarget = ""
+}
+
 // checklistItem represents a parsed option from a multi-select question.
 type checklistItem struct {
 	label       string
@@ -1484,6 +1644,7 @@ func parseChecklist(waitingFor string) (questionText string, items []checklistIt
 // buildMultiSelectPanel renders a multi-select question as an interactive
 // checklist. Options are navigable with up/down, togglable with Enter or
 // number keys, with Submit and Dismiss at the bottom.
+// All toggles are buffered locally — nothing is sent to the pane until Submit.
 func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []string) []string {
 	focused := m.focus == panelActions
 	borderStyle := accentBorderStyle
@@ -1494,7 +1655,14 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		contentWidth = 10
 	}
 
-	// Parse question text and checkbox options
+	// Ensure local checks are initialized for this verdict
+	if isMultiSelectQuestion(v) {
+		m.initLocalChecks(v)
+	}
+
+	// Parse question text and checkbox options.
+	// Use localChecks for checked state if available (buffered selection),
+	// otherwise fall back to parser state from WaitingFor.
 	questionText, checkItems := parseChecklist(v.WaitingFor)
 
 	// Question text with blue border
@@ -1517,10 +1685,16 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 
 		isCustomOpt := hasCustom && isCustomAnswerAction(v.Actions[i])
 
+		// Use buffered local state if available, otherwise parser state
+		checked := item.checked
+		if m.localChecks != nil {
+			checked = m.localChecks[i]
+		}
+
 		// Checkbox indicator
 		checkbox := "[ ]"
 		checkStyle := dimStyle
-		if item.checked {
+		if checked {
 			checkbox = "[✓]"
 			checkStyle = activeStyle
 		}
@@ -1588,19 +1762,34 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		}
 	}
 
-	// Hint line
+	// Hint line with pending changes indicator
 	if focused {
 		lines = append(lines, "")
+		// Count pending changes
+		pendingChanges := 0
+		if m.localChecks != nil {
+			for i, desired := range m.localChecks {
+				if desired != m.initialChecks[i] {
+					pendingChanges++
+				}
+			}
+		}
+		if m.textInput.Value() != "" {
+			pendingChanges++
+		}
 		optCount := len(checkItems)
 		if hasCustom {
 			// Don't count the custom option in the toggle range
 			optCount--
 		}
+		hint := "  enter=submit  esc=discard"
 		if optCount > 0 {
-			lines = append(lines, dimStyle.Render(fmt.Sprintf("  space/1-%d=toggle  enter=submit  esc=back", optCount)))
-		} else {
-			lines = append(lines, dimStyle.Render("  enter=submit  esc=back"))
+			hint = fmt.Sprintf("  space/1-%d=toggle  enter=submit  esc=discard", optCount)
 		}
+		if pendingChanges > 0 {
+			hint += fmt.Sprintf("  (%d pending)", pendingChanges)
+		}
+		lines = append(lines, dimStyle.Render(hint))
 	}
 
 	return lines
