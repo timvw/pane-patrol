@@ -1,15 +1,15 @@
 # pane-patrol
 
-ZFC-compliant terminal pane monitor — AI observes AI coding agents for blocked/waiting states.
+Terminal pane monitor for AI coding agents — detects blocked states and suggests unblocking actions.
 
 ## What it does
 
-pane-patrol monitors terminal multiplexer panes (tmux) and uses an LLM
-to determine if AI coding agents are blocked waiting for human input —
-confirmation dialogs, permission prompts, questions, or interactive selections.
+pane-patrol monitors terminal multiplexer panes (tmux) and determines if AI
+coding agents are blocked waiting for human input — confirmation dialogs,
+permission prompts, questions, or idle at their input prompt.
 
-Following [ZFC (Zero False Commands)](docs/design-principles.md) principles,
-**all judgment calls are made by the LLM**. Go code only provides transport.
+It uses a **hybrid evaluation** approach: deterministic parsers for known
+agents (instant, free, no API key needed) with LLM fallback for unknown agents.
 
 ![Supervisor TUI — blocked agents with suggested actions](docs/images/supervisor-blocked.png)
 
@@ -31,26 +31,32 @@ The supervisor solves this with a continuous scan loop (every 5s by default):
      (via `pgrep -P` and `ps`), prepended as a `[Process Info]` header
    - **Check cache** — SHA256 hash of content; if unchanged since last
      scan and within TTL (2m default), reuse the previous verdict
-   - **Evaluate via LLM** — send content + process info to the configured
-     model. The LLM returns: agent type, blocked status, reason, suggested
-     actions with risk levels, a recommended action, and step-by-step
-     reasoning
+   - **Tier 1: Deterministic parser** — known agents (OpenCode, Claude Code,
+     Codex) are identified by process tree and TUI markers, then evaluated
+     by exact pattern matching derived from each agent's source code
+   - **Tier 2: LLM fallback** — unrecognized agents are sent to the
+     configured LLM, which returns: agent type, blocked status, reason,
+     suggested actions with risk levels, and reasoning
 4. **Display** results in the interactive TUI
 5. **Wait** for next refresh tick or user action
 
-### ZFC: Zero False Commands
+### Hybrid evaluation
 
-The [ZFC principle](docs/design-principles.md) (inspired by
-[Gastown](https://github.com/steveyegge/gastown)) means **Go transports,
-AI decides**. Go code never interprets pane content — no regex matching,
-no hardcoded process name lists, no "idle > N minutes" heuristics. The
-LLM makes all classification decisions.
+pane-patrol uses two evaluation tiers:
 
-The LLM is instructed to check the **bottom of the screen first** (most
-recent state) and treat any active execution signal anywhere on screen
-(spinners, build indicators, streaming output) as NOT blocked. It also
-recognizes that supervisor/monitoring TUIs like pane-patrol itself are
-not AI agents.
+- **Tier 1 — Deterministic parsers** (`internal/parser/`) handle known agents
+  by matching exact TUI patterns derived from each agent's source code. This
+  is protocol parsing, not heuristic classification. Parsers produce verdicts
+  with specific unblocking actions (e.g., numeric key `1` for Claude Code
+  permission dialogs, `Enter` for Codex approvals).
+
+- **Tier 2 — LLM fallback** (`internal/evaluator/`) handles unknown agents
+  and non-agent panes. The LLM is instructed to check the bottom of the
+  screen first and treat any active execution signal (spinners, build
+  indicators, streaming output) as NOT blocked.
+
+No API key is required if deterministic parsers handle all your panes.
+The LLM is only called when no parser matches.
 
 ### Why the cache works
 
@@ -129,7 +135,7 @@ go build -o bin/pane-patrol .
 
 The primary way to use pane-patrol. Launch an interactive terminal UI that
 continuously scans all panes, shows agent status, and lets you unblock stuck
-agents with LLM-suggested actions or free-form text.
+agents with suggested actions or free-form text.
 
 ```bash
 pane-patrol supervisor
@@ -178,14 +184,14 @@ The summary line shows `visible/total panes` so you can see how much is filtered
 ### Auto-nudge
 
 Press `a` to toggle automatic nudging. When enabled, the supervisor
-automatically sends the LLM-recommended action to blocked panes if the
+automatically sends the recommended action to blocked panes if the
 action's risk level is within the configured threshold (default: `low`).
 
 ### Two-panel layout
 
 - **Left panel**: session/pane list grouped by tmux session, with status icons
   (`⚠` blocked, `✓` active, `·` non-agent)
-- **Right panel**: details and LLM-suggested actions for the selected pane,
+- **Right panel**: details and suggested actions for the selected pane,
   with risk levels (`low`, `med`, `HIGH`)
 
 ## Configuration
@@ -275,9 +281,9 @@ pane-patrol capture mysession:0.0
 pane-patrol check mysession:0.0
 ```
 
-Output includes agent classification, blocked status, reason, LLM-suggested
-actions with risk levels, and token usage. Process metadata (PID, child
-processes) is included in the LLM evaluation, matching `scan` and `supervisor`.
+Output includes agent classification, blocked status, reason, suggested
+actions with risk levels, and token usage. Known agents are evaluated by
+deterministic parsers; unknown agents fall back to LLM evaluation.
 
 ### Scan all panes
 
