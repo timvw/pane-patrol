@@ -49,6 +49,23 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 	if r := p.parseAutoResolve(content); r != nil {
 		return r
 	}
+	// Check idle at bottom BEFORE active execution: if the bottom of the
+	// screen shows a clear idle prompt, stale active indicators above it
+	// are from a prior turn and should be ignored.
+	if p.isIdleAtBottom(content) {
+		return &Result{
+			Agent:      "claude_code",
+			Blocked:    true,
+			Reason:     "idle at prompt",
+			WaitingFor: "idle at prompt",
+			Actions: []model.Action{
+				{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
+			},
+			Recommended: 0,
+			Reasoning:   "deterministic parser: Claude Code TUI detected, idle prompt at bottom of screen",
+		}
+	}
+
 	if p.isActiveExecution(content) {
 		return &Result{
 			Agent:     "claude_code",
@@ -58,7 +75,7 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 		}
 	}
 
-	// Default: idle at prompt
+	// Default: idle at prompt (fallthrough for unrecognized Claude Code state)
 	return &Result{
 		Agent:      "claude_code",
 		Blocked:    true,
@@ -70,6 +87,31 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 		Recommended: 0,
 		Reasoning:   "deterministic parser: Claude Code TUI detected, no active execution indicators, agent is idle",
 	}
+}
+
+// isIdleAtBottom checks if the bottom of the screen shows a clear idle
+// prompt. Claude Code's idle state has "❯" prompt and/or "? for shortcuts"
+// footer, with "✻ Worked for" (completed, not active).
+func (p *ClaudeCodeParser) isIdleAtBottom(content string) bool {
+	lines := strings.Split(content, "\n")
+	bottom := bottomNonEmpty(lines, bottomLines)
+	hasPrompt := false
+	for _, line := range bottom {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "❯" || trimmed == ">" || strings.HasPrefix(trimmed, "❯ ") {
+			hasPrompt = true
+		}
+		if trimmed == "? for shortcuts" {
+			hasPrompt = true
+		}
+		// If there's an active "✻ Verb…" at the bottom, NOT idle
+		if strings.HasPrefix(trimmed, "✻") && !strings.HasPrefix(trimmed, "✻ Worked") {
+			if strings.Contains(trimmed, "…") || strings.Contains(trimmed, "...") {
+				return false
+			}
+		}
+	}
+	return hasPrompt
 }
 
 func (p *ClaudeCodeParser) isClaudeCode(content string, processTree []string) bool {
@@ -186,7 +228,9 @@ func (p *ClaudeCodeParser) parseAutoResolve(content string) *Result {
 	}
 }
 
-// isActiveExecution checks for tool execution indicators.
+// isActiveExecution checks for tool execution indicators in the bottom
+// portion of the captured content. Only the last bottomLines lines are
+// scanned to avoid false positives from stale indicators in scrollback.
 //
 // Claude Code uses "✻" as its thinking/working indicator. The pattern is:
 //
@@ -197,6 +241,7 @@ func (p *ClaudeCodeParser) parseAutoResolve(content string) *Result {
 // so we match on the "✻" prefix + ellipsis rather than specific verbs.
 func (p *ClaudeCodeParser) isActiveExecution(content string) bool {
 	lines := strings.Split(content, "\n")
+	lines = bottomNonEmpty(lines, bottomLines)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 

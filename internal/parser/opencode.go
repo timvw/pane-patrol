@@ -33,6 +33,23 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 	if r := p.parseRejectDialog(content); r != nil {
 		return r
 	}
+	// Check idle at bottom BEFORE active execution: if the bottom of the
+	// screen shows a clear idle prompt, stale active indicators above it
+	// are from a prior turn and should be ignored.
+	if p.isIdleAtBottom(content) {
+		return &Result{
+			Agent:      "opencode",
+			Blocked:    true,
+			Reason:     "idle at prompt",
+			WaitingFor: "idle at prompt",
+			Actions: []model.Action{
+				{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
+			},
+			Recommended: 0,
+			Reasoning:   "deterministic parser: OpenCode TUI detected, idle prompt at bottom of screen",
+		}
+	}
+
 	if p.isActiveExecution(content) {
 		return &Result{
 			Agent:     "opencode",
@@ -42,7 +59,7 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 		}
 	}
 
-	// Default: idle at prompt
+	// Default: idle at prompt (fallthrough for unrecognized OpenCode state)
 	return &Result{
 		Agent:      "opencode",
 		Blocked:    true,
@@ -54,6 +71,21 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 		Recommended: 0,
 		Reasoning:   "deterministic parser: OpenCode TUI detected, no active execution indicators, agent is idle",
 	}
+}
+
+// isIdleAtBottom checks if the bottom of the screen shows a clear idle
+// prompt. OpenCode's idle state has "> " prompt line.
+func (p *OpenCodeParser) isIdleAtBottom(content string) bool {
+	lines := strings.Split(content, "\n")
+	bottom := bottomNonEmpty(lines, bottomLines)
+	for _, line := range bottom {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == ">" || strings.HasPrefix(trimmed, "> ") {
+			// Make sure there's no active indicator BELOW the prompt
+			return true
+		}
+	}
+	return false
 }
 
 // isOpenCode checks if this pane is running OpenCode based on the process tree
@@ -123,9 +155,12 @@ func (p *OpenCodeParser) parseRejectDialog(content string) *Result {
 	}
 }
 
-// isActiveExecution checks for active execution indicators.
+// isActiveExecution checks for active execution indicators in the bottom
+// portion of the captured content. Only the last bottomLines lines are
+// scanned to avoid false positives from stale indicators in scrollback.
 func (p *OpenCodeParser) isActiveExecution(content string) bool {
 	lines := strings.Split(content, "\n")
+	lines = bottomNonEmpty(lines, bottomLines)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 

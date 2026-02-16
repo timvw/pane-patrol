@@ -50,6 +50,23 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 	if r := p.parseUserInputRequest(content); r != nil {
 		return r
 	}
+	// Check idle at bottom BEFORE active execution: if the bottom of the
+	// screen shows a clear idle prompt, stale active indicators above it
+	// are from a prior turn and should be ignored.
+	if p.isIdleAtBottom(content) {
+		return &Result{
+			Agent:      "codex",
+			Blocked:    true,
+			Reason:     "idle at prompt",
+			WaitingFor: "idle at prompt",
+			Actions: []model.Action{
+				{Keys: "Enter", Label: "submit / continue", Risk: "low", Raw: true},
+			},
+			Recommended: 0,
+			Reasoning:   "deterministic parser: Codex TUI detected, idle prompt at bottom of screen",
+		}
+	}
+
 	if p.isActiveExecution(content) {
 		return &Result{
 			Agent:     "codex",
@@ -59,7 +76,7 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 		}
 	}
 
-	// Default: idle at prompt
+	// Default: idle at prompt (fallthrough for unrecognized Codex state)
 	return &Result{
 		Agent:      "codex",
 		Blocked:    true,
@@ -71,6 +88,23 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 		Recommended: 0,
 		Reasoning:   "deterministic parser: Codex TUI detected, no active execution indicators, agent is idle",
 	}
+}
+
+// isIdleAtBottom checks if the bottom of the screen shows a clear idle
+// prompt. Codex's idle state has ">" prompt and/or "Plan mode  shift+tab to cycle".
+func (p *CodexParser) isIdleAtBottom(content string) bool {
+	lines := strings.Split(content, "\n")
+	bottom := bottomNonEmpty(lines, bottomLines)
+	for _, line := range bottom {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == ">" || strings.HasPrefix(trimmed, "> ") {
+			return true
+		}
+		if strings.Contains(trimmed, "Plan mode") && strings.Contains(trimmed, "shift+tab") {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *CodexParser) isCodex(content string, processTree []string) bool {
@@ -215,9 +249,12 @@ func (p *CodexParser) parseUserInputRequest(content string) *Result {
 	}
 }
 
-// isActiveExecution checks for Codex working/execution indicators.
+// isActiveExecution checks for Codex working/execution indicators in the
+// bottom portion of the captured content. Only the last bottomLines lines
+// are scanned to avoid false positives from stale indicators in scrollback.
 func (p *CodexParser) isActiveExecution(content string) bool {
 	lines := strings.Split(content, "\n")
+	lines = bottomNonEmpty(lines, bottomLines)
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 

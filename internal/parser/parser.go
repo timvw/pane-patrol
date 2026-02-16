@@ -10,6 +10,8 @@
 package parser
 
 import (
+	"strings"
+
 	"github.com/timvw/pane-patrol/internal/model"
 )
 
@@ -63,4 +65,26 @@ func (r *Registry) Parse(content string, processTree []string) *Result {
 		}
 	}
 	return nil
+}
+
+// bottomLines is the number of non-empty lines from the bottom of the
+// captured content to examine for idle/active state. This must be small
+// enough that stale indicators from prior turns—even in short captures—
+// are excluded when a clear idle prompt is present at the very bottom.
+const bottomLines = 5
+
+// bottomNonEmpty returns the last n non-empty (after trimming) lines from
+// a slice. This gives us the "current state" at the bottom of the screen,
+// skipping trailing blank lines that terminals often have.
+func bottomNonEmpty(lines []string, n int) []string {
+	// Trim trailing empty lines first
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	start := end - n
+	if start < 0 {
+		start = 0
+	}
+	return lines[start:end]
 }

@@ -533,6 +533,152 @@ func TestCodex_UserInputRequest(t *testing.T) {
 	}
 }
 
+// --- Scrollback False-Positive Tests ---
+//
+// These tests verify that stale active-execution indicators in scrollback
+// do NOT override a clearly idle/blocked state at the bottom of the screen.
+// tmux capture-pane returns the visible viewport by default, but long-running
+// agents may have prior "Working/✻ Thinking/Build" lines still visible above
+// the current prompt.
+
+func TestClaude_StaleThinkingInScrollback(t *testing.T) {
+	// Stale "✻ Reasoning…" from a previous turn is still visible in scrollback,
+	// but Claude has since completed and is now idle at prompt.
+	content := `
+✻ Reasoning… (1m 5s · ↓ 500 tokens)
+
+  Here is the answer to your question...
+  I've made the changes you requested.
+
+✻ Worked for 2m 15s
+
+❯
+? for shortcuts
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true: stale '✻ Reasoning…' in scrollback should not override idle prompt at bottom")
+	}
+}
+
+func TestClaude_StaleProgressInScrollback(t *testing.T) {
+	// Stale "Reading…" progress line from prior tool use visible above
+	// a permission dialog at the bottom.
+	content := `
+  Reading file...
+
+  Claude needs your permission to use Bash
+
+  $ rm -rf /tmp/test
+
+  Do you want to proceed?
+  ❯ 1. Yes  2. Yes, and don't ask again  3. No
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true: permission dialog at bottom should take priority over stale progress")
+	}
+}
+
+func TestOpenCode_StaleBuildInScrollback(t *testing.T) {
+	// Stale "▣ Build" from a previous turn visible above an idle prompt.
+	content := `
+  ▣ Build · claude-sonnet-4-5 · 45s
+
+  ■■■■■■■■
+
+  Build completed. Here are the results...
+
+  > 
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true: stale '▣ Build' in scrollback should not override idle prompt at bottom")
+	}
+}
+
+func TestOpenCode_StaleSpinnerInScrollback(t *testing.T) {
+	// Stale braille spinner from a previous operation above a permission dialog.
+	content := `
+  Processing ⠹ task completed
+
+  △ Permission required
+
+  # Bash command
+  $ npm install
+
+  Allow once  Allow always  Reject
+
+  ⇆ select  enter confirm
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true: permission dialog should take priority over stale spinner in scrollback")
+	}
+}
+
+func TestCodex_StaleWorkingInScrollback(t *testing.T) {
+	// Stale "Working" from a previous turn visible above an idle prompt.
+	content := `
+  Working
+
+  └ Reading file src/main.go
+
+  (12s · esc to interrupt)
+
+  Task completed. Made the requested changes.
+
+  Plan mode  shift+tab to cycle
+
+  >
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true: stale 'Working' in scrollback should not override idle prompt at bottom")
+	}
+}
+
+func TestCodex_StaleApprovalAboveIdle(t *testing.T) {
+	// Stale "✔ You approved codex to run" from a previous action visible above idle prompt.
+	content := `
+  ✔ You approved codex to run git status
+
+  Here is the status output...
+
+  Plan mode  shift+tab to cycle
+
+  >
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true: stale '✔ You approved' should not override idle prompt at bottom")
+	}
+}
+
 // --- Registry Tests ---
 
 func TestRegistry_MatchesOpenCode(t *testing.T) {
