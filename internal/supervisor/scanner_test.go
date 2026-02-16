@@ -444,6 +444,65 @@ func TestScanner_CapturePaneError(t *testing.T) {
 	}
 }
 
+func TestScanner_WaitingForWiredFromLLM(t *testing.T) {
+	mux := &mockMultiplexer{
+		panes: []model.Pane{
+			{Target: "dev:0.0", Session: "dev", Window: 0, Pane: 0, PID: 1234, Command: "bash"},
+		},
+		captures: map[string]string{
+			"dev:0.0": "some unknown agent\nDo you want to proceed?\n1. Yes  2. No",
+		},
+	}
+
+	// Build the expected content key (process header + capture)
+	pane := mux.panes[0]
+	expectedContent := model.BuildProcessHeader(pane) + mux.captures["dev:0.0"]
+
+	eval := &mockEvaluator{
+		verdicts: map[string]*model.LLMVerdict{
+			expectedContent: {
+				Agent:      "unknown_agent",
+				Blocked:    true,
+				Reason:     "permission dialog",
+				WaitingFor: "Do you want to proceed?\n1. Yes  2. No",
+				Actions: []model.Action{
+					{Keys: "y", Label: "approve", Risk: "medium"},
+				},
+				Recommended: 0,
+				Reasoning:   "saw a permission dialog",
+				Usage:       model.TokenUsage{InputTokens: 200, OutputTokens: 100},
+			},
+		},
+	}
+
+	scanner := &Scanner{
+		Mux:       mux,
+		Evaluator: eval,
+		Parallel:  1,
+		// No Parsers — force LLM fallback
+	}
+
+	result, err := scanner.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	if len(result.Verdicts) != 1 {
+		t.Fatalf("got %d verdicts, want 1", len(result.Verdicts))
+	}
+
+	v := result.Verdicts[0]
+	if v.WaitingFor != "Do you want to proceed?\n1. Yes  2. No" {
+		t.Errorf("WaitingFor: got %q, want %q", v.WaitingFor, "Do you want to proceed?\n1. Yes  2. No")
+	}
+	if v.Recommended != 0 {
+		t.Errorf("Recommended: got %d, want 0", v.Recommended)
+	}
+	if len(v.Actions) != 1 {
+		t.Errorf("Actions: got %d, want 1", len(v.Actions))
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsSubstr(s, substr)
 }

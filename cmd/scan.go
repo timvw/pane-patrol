@@ -13,6 +13,7 @@ import (
 	"github.com/timvw/pane-patrol/internal/evaluator"
 	"github.com/timvw/pane-patrol/internal/model"
 	"github.com/timvw/pane-patrol/internal/mux"
+	"github.com/timvw/pane-patrol/internal/parser"
 )
 
 var (
@@ -23,14 +24,13 @@ var (
 var scanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Evaluate all panes for blocked agents",
-	Long: `Scan all terminal multiplexer panes and evaluate each using an LLM.
+	Long: `Scan all terminal multiplexer panes and evaluate each one.
 
-Outputs a JSON array of verdicts for all panes. Use --filter to restrict
-to sessions matching a regex pattern. Use --parallel to evaluate multiple
-panes concurrently.
+Known agents (OpenCode, Claude Code, Codex) are evaluated by deterministic
+parsers. Unknown agents fall back to LLM evaluation.
 
-ZFC compliance: Go lists panes, captures content, and sends to LLM.
-The LLM decides everything — which panes are agents, which are blocked, and why.`,
+Outputs a JSON array of verdicts. Use --filter to restrict to sessions
+matching a regex pattern. Use --parallel to evaluate concurrently.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 
@@ -128,6 +128,7 @@ The LLM decides everything — which panes are agents, which are blocked, and wh
 }
 
 // evaluatePane captures and evaluates a single pane.
+// Uses deterministic parsers first; falls back to LLM for unrecognized agents.
 func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluator, pane model.Pane) (*model.Verdict, error) {
 	start := time.Now()
 
@@ -138,6 +139,34 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 
 	content := model.BuildProcessHeader(pane) + capture
 
+	// Tier 1: Deterministic parsers for known agents.
+	registry := parser.NewRegistry()
+	if parsed := registry.Parse(capture, pane.ProcessTree); parsed != nil {
+		verdict := &model.Verdict{
+			Target:      pane.Target,
+			Session:     pane.Session,
+			Window:      pane.Window,
+			Pane:        pane.Pane,
+			Command:     pane.Command,
+			Agent:       parsed.Agent,
+			Blocked:     parsed.Blocked,
+			Reason:      parsed.Reason,
+			WaitingFor:  parsed.WaitingFor,
+			Reasoning:   parsed.Reasoning,
+			Actions:     parsed.Actions,
+			Recommended: parsed.Recommended,
+			Model:       "deterministic",
+			Provider:    "parser",
+			EvaluatedAt: time.Now().UTC(),
+			DurationMs:  time.Since(start).Milliseconds(),
+		}
+		if flagVerbose {
+			verdict.Content = content
+		}
+		return verdict, nil
+	}
+
+	// Tier 2: LLM fallback.
 	llmVerdict, err := eval.Evaluate(ctx, content)
 	if err != nil {
 		return nil, fmt.Errorf("evaluation failed: %w", err)
@@ -152,6 +181,7 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 		Agent:       llmVerdict.Agent,
 		Blocked:     llmVerdict.Blocked,
 		Reason:      llmVerdict.Reason,
+		WaitingFor:  llmVerdict.WaitingFor,
 		Reasoning:   llmVerdict.Reasoning,
 		Actions:     llmVerdict.Actions,
 		Recommended: llmVerdict.Recommended,

@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/timvw/pane-patrol/internal/config"
-	"github.com/timvw/pane-patrol/internal/evaluator"
 	telem "github.com/timvw/pane-patrol/internal/otel"
+	"github.com/timvw/pane-patrol/internal/parser"
 	"github.com/timvw/pane-patrol/internal/supervisor"
 )
 
@@ -83,6 +83,9 @@ func runSupervisor(cmd *cobra.Command) error {
 		fmt.Fprintf(os.Stderr, "config: loaded %s\n", cfg.ConfigFile)
 	}
 
+	// Wire build version into OTEL service metadata
+	telem.Version = Version
+
 	// Initialize OTEL (no-op if no endpoint configured)
 	tel, err := telem.Init(ctx, telem.OTELConfig{
 		Endpoint: cfg.OTELEndpoint,
@@ -101,8 +104,8 @@ func runSupervisor(cmd *cobra.Command) error {
 		return fmt.Errorf("no supported terminal multiplexer found: %w", err)
 	}
 
-	// Create evaluator from config
-	eval, err := newSupervisorEvaluator(cfg)
+	// Create evaluator from config (shared factory with check/scan commands)
+	eval, err := newEvaluatorFromConfig(cfg)
 	if err != nil {
 		return err
 	}
@@ -116,6 +119,7 @@ func runSupervisor(cmd *cobra.Command) error {
 	scanner := &supervisor.Scanner{
 		Mux:             m,
 		Evaluator:       eval,
+		Parsers:         parser.NewRegistry(),
 		Filter:          cfg.Filter,
 		ExcludeSessions: cfg.ExcludeSessions,
 		Parallel:        cfg.Parallel,
@@ -132,41 +136,6 @@ func runSupervisor(cmd *cobra.Command) error {
 	}
 
 	return tui.Run(ctx)
-}
-
-// newSupervisorEvaluator creates an LLM evaluator from the loaded config.
-func newSupervisorEvaluator(cfg *config.Config) (evaluator.Evaluator, error) {
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("no API key found. Set api_key in config file, or PANE_PATROL_API_KEY / AZURE_OPENAI_API_KEY / ANTHROPIC_API_KEY env var")
-	}
-
-	extraHeaders := map[string]string{}
-	if config.IsAzureEndpoint(cfg.BaseURL) {
-		extraHeaders["api-key"] = cfg.APIKey
-	}
-
-	switch cfg.Provider {
-	case "anthropic":
-		return evaluator.NewAnthropicEvaluator(evaluator.AnthropicConfig{
-			BaseURL:      cfg.BaseURL,
-			APIKey:       cfg.APIKey,
-			Model:        cfg.Model,
-			MaxTokens:    cfg.MaxTokens,
-			ExtraHeaders: extraHeaders,
-		}), nil
-
-	case "openai":
-		return evaluator.NewOpenAIEvaluator(evaluator.OpenAIConfig{
-			BaseURL:      cfg.BaseURL,
-			APIKey:       cfg.APIKey,
-			Model:        cfg.Model,
-			MaxTokens:    cfg.MaxTokens,
-			ExtraHeaders: extraHeaders,
-		}), nil
-
-	default:
-		return nil, fmt.Errorf("unknown provider %q (supported: anthropic, openai)", cfg.Provider)
-	}
 }
 
 // autoEmbedInTmux re-launches the current process inside a tmux session
@@ -213,11 +182,11 @@ func autoEmbedInTmux() {
 	tmuxArgs = append(tmuxArgs, "-c", wd, exe)
 	tmuxArgs = append(tmuxArgs, os.Args[1:]...)
 
-	fmt.Fprintf(os.Stderr, "not inside tmux — auto-embedding in tmux session")
 	if sessionName != "" {
-		fmt.Fprintf(os.Stderr, " %q", sessionName)
+		fmt.Fprintf(os.Stderr, "not inside tmux — auto-embedding in tmux session %q\n", sessionName)
+	} else {
+		fmt.Fprintf(os.Stderr, "not inside tmux — auto-embedding in a new tmux session\n")
 	}
-	fmt.Fprintf(os.Stderr, "\n")
 
 	// Replace this process with tmux. On success, this never returns.
 	if err := syscall.Exec(tmuxPath, tmuxArgs, os.Environ()); err != nil {

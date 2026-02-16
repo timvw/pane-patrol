@@ -17,6 +17,7 @@ import (
 	"github.com/timvw/pane-patrol/internal/evaluator"
 	"github.com/timvw/pane-patrol/internal/model"
 	"github.com/timvw/pane-patrol/internal/mux"
+	"github.com/timvw/pane-patrol/internal/parser"
 )
 
 var tracer = otel.Tracer("pane-supervisor")
@@ -25,6 +26,7 @@ var tracer = otel.Tracer("pane-supervisor")
 type Scanner struct {
 	Mux             mux.Multiplexer
 	Evaluator       evaluator.Evaluator
+	Parsers         *parser.Registry // Deterministic parsers for known agents; nil disables
 	Filter          string
 	ExcludeSessions []string // Session names to exclude from scanning (exact match)
 	Parallel        int
@@ -59,27 +61,19 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 		return nil, fmt.Errorf("failed to list panes: %w", err)
 	}
 
-	// Skip the pane running this supervisor process to avoid self-evaluation
-	if s.SelfTarget != "" {
-		filtered := panes[:0]
-		for _, p := range panes {
-			if p.Target != s.SelfTarget {
-				filtered = append(filtered, p)
-			}
+	// Filter panes: skip self-target and excluded sessions.
+	// Use a fresh slice to avoid aliasing the original backing array.
+	filtered := make([]model.Pane, 0, len(panes))
+	for _, p := range panes {
+		if s.SelfTarget != "" && p.Target == s.SelfTarget {
+			continue
 		}
-		panes = filtered
-	}
-
-	// Exclude sessions by name (exact match or prefix glob with trailing *)
-	if len(s.ExcludeSessions) > 0 {
-		filtered := panes[:0]
-		for _, p := range panes {
-			if !config.MatchesExcludeList(p.Session, s.ExcludeSessions) {
-				filtered = append(filtered, p)
-			}
+		if len(s.ExcludeSessions) > 0 && config.MatchesExcludeList(p.Session, s.ExcludeSessions) {
+			continue
 		}
-		panes = filtered
+		filtered = append(filtered, p)
 	}
+	panes = filtered
 
 	if len(panes) == 0 {
 		return &ScanResult{}, nil
@@ -182,8 +176,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		return nil, fmt.Errorf("capture failed: %w", err)
 	}
 
-	// Prepend process metadata to give the LLM stronger signals.
-	// Uses shared BuildProcessHeader — pure transport, not interpretation (ZFC compliant).
+	// Prepend process metadata for context.
 	content := model.BuildProcessHeader(pane) + capture
 
 	// Set the pane content as the observation input for Langfuse
@@ -215,6 +208,67 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		}
 	}
 
+	// --- Tier 1: Deterministic parser for known agents ---
+	// Try parsers first — instant, free, 100% accurate for known agents.
+	if s.Parsers != nil {
+		if parsed := s.Parsers.Parse(capture, pane.ProcessTree); parsed != nil {
+			verdict := &model.Verdict{
+				Target:      pane.Target,
+				Session:     pane.Session,
+				Window:      pane.Window,
+				Pane:        pane.Pane,
+				Command:     pane.Command,
+				Agent:       parsed.Agent,
+				Blocked:     parsed.Blocked,
+				Reason:      parsed.Reason,
+				WaitingFor:  parsed.WaitingFor,
+				Reasoning:   parsed.Reasoning,
+				Actions:     parsed.Actions,
+				Recommended: parsed.Recommended,
+				Usage:       model.TokenUsage{}, // No LLM call
+				Model:       "deterministic",
+				Provider:    "parser",
+				EvaluatedAt: time.Now().UTC(),
+				DurationMs:  time.Since(start).Milliseconds(),
+			}
+
+			if s.Verbose {
+				verdict.Content = content
+			}
+
+			// Langfuse output for parser results
+			parserOutput := map[string]any{
+				"agent":       verdict.Agent,
+				"blocked":     verdict.Blocked,
+				"reason":      verdict.Reason,
+				"waiting_for": verdict.WaitingFor,
+				"reasoning":   verdict.Reasoning,
+				"source":      "deterministic_parser",
+			}
+			if outputJSON, err := json.Marshal(parserOutput); err == nil {
+				span.SetAttributes(attribute.String("langfuse.observation.output", string(outputJSON)))
+			}
+
+			span.SetAttributes(
+				attribute.Bool("cache.hit", false),
+				attribute.Bool("parser.hit", true),
+				attribute.String("verdict.agent", verdict.Agent),
+				attribute.Bool("verdict.blocked", verdict.Blocked),
+				attribute.String("langfuse.observation.metadata.verdict_agent", verdict.Agent),
+				attribute.String("langfuse.observation.metadata.verdict_blocked", fmt.Sprintf("%v", verdict.Blocked)),
+				attribute.String("langfuse.observation.metadata.verdict_source", "deterministic_parser"),
+			)
+
+			// Store in cache for future scans
+			if s.Cache != nil {
+				s.Cache.Store(pane.Target, content, *verdict)
+			}
+
+			return verdict, nil
+		}
+	}
+
+	// --- Tier 2: LLM fallback for unrecognized agents ---
 	llmVerdict, err := s.Evaluator.Evaluate(ctx, content)
 	if err != nil {
 		return nil, fmt.Errorf("evaluation failed: %w", err)
@@ -260,6 +314,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 
 	span.SetAttributes(
 		attribute.Bool("cache.hit", false),
+		attribute.Bool("parser.hit", false),
 		attribute.String("verdict.agent", verdict.Agent),
 		attribute.Bool("verdict.blocked", verdict.Blocked),
 		attribute.Int64("tokens.input", verdict.Usage.InputTokens),
