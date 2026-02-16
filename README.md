@@ -135,6 +135,18 @@ agents with LLM-suggested actions or free-form text.
 pane-patrol supervisor
 ```
 
+If you run the supervisor **outside tmux** (e.g., from a standalone terminal),
+it automatically re-launches itself inside a new tmux session so that
+navigation (click, Enter, post-action jump via `tmux switch-client`) works
+correctly. Scanning and nudging work either way — only navigation requires an
+active tmux client.
+
+Use `--no-embed` to disable auto-embedding:
+
+```bash
+pane-patrol supervisor --no-embed
+```
+
 ### Keyboard shortcuts
 
 | Key | Action |

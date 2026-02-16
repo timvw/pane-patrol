@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,12 +16,19 @@ import (
 	"github.com/timvw/pane-patrol/internal/supervisor"
 )
 
+var flagNoEmbed bool
+
 var supervisorCmd = &cobra.Command{
 	Use:   "supervisor",
 	Short: "Interactive TUI to monitor and unblock AI coding agents",
 	Long: `Launch an interactive terminal UI that continuously scans all panes,
 shows which AI coding agents are blocked, and lets you unblock them
 with LLM-suggested actions or free-form text input.
+
+If not already running inside tmux, the supervisor automatically
+re-launches itself in a new tmux session so that navigation (click,
+Enter, post-action jump) works correctly. Use --no-embed to disable
+this behavior.
 
 Configuration is loaded from .pane-patrol.yaml or environment variables.
 See the README for all configuration options.`,
@@ -30,10 +38,19 @@ See the README for all configuration options.`,
 }
 
 func init() {
+	supervisorCmd.Flags().BoolVar(&flagNoEmbed, "no-embed", false,
+		"Do not auto-embed in a tmux session (navigation will not work outside tmux)")
 	rootCmd.AddCommand(supervisorCmd)
 }
 
 func runSupervisor(cmd *cobra.Command) error {
+	// Auto-embed in tmux if not already inside one.
+	// Navigation (switch-client) requires an active tmux client, so
+	// we re-exec the same command inside a new tmux session.
+	if !flagNoEmbed {
+		autoEmbedInTmux()
+	}
+
 	ctx := context.Background()
 
 	// Load configuration: defaults -> config file -> env vars.
@@ -149,6 +166,64 @@ func newSupervisorEvaluator(cfg *config.Config) (evaluator.Evaluator, error) {
 
 	default:
 		return nil, fmt.Errorf("unknown provider %q (supported: anthropic, openai)", cfg.Provider)
+	}
+}
+
+// autoEmbedInTmux re-launches the current process inside a tmux session
+// when not already running under tmux. This ensures navigation commands
+// (switch-client) have an active client. On success, the current process
+// is replaced (syscall.Exec) and this function never returns. On failure,
+// it prints a warning and returns so the supervisor can run with degraded
+// navigation.
+func autoEmbedInTmux() {
+	if os.Getenv("TMUX") != "" {
+		return // already inside tmux
+	}
+
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: tmux not found in PATH, navigation will not work\n")
+		return
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not resolve executable path: %v\n", err)
+		return
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		wd = "/"
+	}
+
+	// Pick a session name, avoiding conflicts with existing sessions.
+	sessionName := "pane-patrol"
+	hasSession := exec.Command(tmuxPath, "has-session", "-t", sessionName)
+	if hasSession.Run() == nil {
+		// Session exists — let tmux auto-name instead
+		sessionName = ""
+	}
+
+	// Build: tmux new-session [-s name] -c <wd> <exe> <args...>
+	tmuxArgs := []string{"tmux", "new-session"}
+	if sessionName != "" {
+		tmuxArgs = append(tmuxArgs, "-s", sessionName)
+	}
+	tmuxArgs = append(tmuxArgs, "-c", wd, exe)
+	tmuxArgs = append(tmuxArgs, os.Args[1:]...)
+
+	fmt.Fprintf(os.Stderr, "not inside tmux — auto-embedding in tmux session")
+	if sessionName != "" {
+		fmt.Fprintf(os.Stderr, " %q", sessionName)
+	}
+	fmt.Fprintf(os.Stderr, "\n")
+
+	// Replace this process with tmux. On success, this never returns.
+	if err := syscall.Exec(tmuxPath, tmuxArgs, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not auto-embed in tmux: %v\n", err)
+		fmt.Fprintf(os.Stderr, "navigation (click/Enter/post-action jump) will not work\n")
+		fmt.Fprintf(os.Stderr, "use --no-embed to suppress this warning\n")
 	}
 }
 
