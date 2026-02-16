@@ -91,6 +91,85 @@ func bottomNonEmpty(lines []string, n int) []string {
 	return lines[start:end]
 }
 
+// isNumberedOption returns true if the trimmed line starts with a digit
+// followed by a period (e.g., "1. PostgreSQL", "2. SQLite"). This matches
+// the numbered option rendering used by both OpenCode and Codex question dialogs.
+func isNumberedOption(trimmed string) bool {
+	if len(trimmed) < 2 {
+		return false
+	}
+	return trimmed[0] >= '1' && trimmed[0] <= '9' && trimmed[1] == '.'
+}
+
+// countNumberedOptions counts lines matching the "N. label" pattern in the
+// provided lines slice. Used to determine how many options are visible.
+func countNumberedOptions(lines []string) int {
+	count := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isNumberedOption(trimmed) {
+			count++
+		}
+	}
+	return count
+}
+
+// extractQuestionSummary extracts question text and visible options from
+// a question dialog. Looks for the question text above the first numbered
+// option, then collects the option labels.
+func extractQuestionSummary(lines []string) string {
+	// Find the first numbered option line
+	firstOptIdx := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if isNumberedOption(trimmed) {
+			firstOptIdx = i
+			break
+		}
+	}
+	if firstOptIdx < 0 {
+		return "question dialog"
+	}
+
+	// Collect question text from lines above the first option
+	var questionLines []string
+	for i := firstOptIdx - 1; i >= 0 && len(questionLines) < 4; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" && len(questionLines) > 0 {
+			break
+		}
+		if trimmed != "" {
+			questionLines = append(questionLines, trimmed)
+		}
+	}
+	// Reverse (collected bottom-up)
+	for i, j := 0, len(questionLines)-1; i < j; i, j = i+1, j-1 {
+		questionLines[i], questionLines[j] = questionLines[j], questionLines[i]
+	}
+
+	// Collect option labels (up to 6 to keep WaitingFor concise)
+	var optionLabels []string
+	for i := firstOptIdx; i < len(lines) && len(optionLabels) < 6; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if isNumberedOption(trimmed) {
+			optionLabels = append(optionLabels, trimmed)
+		}
+	}
+
+	question := strings.Join(questionLines, "\n")
+	options := strings.Join(optionLabels, "\n")
+	if question != "" && options != "" {
+		return question + "\n" + options
+	}
+	if question != "" {
+		return question
+	}
+	if options != "" {
+		return options
+	}
+	return "question dialog"
+}
+
 // progressVerbs are tool-specific action words used by Claude Code in its
 // progress messages (e.g., "Fetching…", "Reading file.go…").
 var progressVerbs = []string{

@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/timvw/pane-patrol/internal/model"
@@ -21,6 +22,13 @@ import (
 //	  Options: "Yes, just this once" / "Yes, and allow this host for this session" / "No, and tell Codex what to do differently"
 //	MCP: "{server_name} needs your approval."
 //	User input: "Yes, provide the requested info" / "No, but continue without it" / "Cancel this request"
+//
+// Source reference: codex-rs/tui/src/bottom_pane/request_user_input/mod.rs
+// Question dialog (RequestUserInputOverlay): agent asks user questions with numbered options.
+//   - Options rendered as "› 1. Label" (selected) or "  1. Label" (unselected)
+//   - "None of the above" option when is_other is true
+//   - Footer tips: "enter to submit answer" (single), "enter to submit all" (multi-question)
+//   - "esc to interrupt", "tab to add notes", "←/→ to navigate questions"
 //
 // Active state: "Working" header with elapsed time, "({elapsed} · {key} to interrupt)"
 // Footer: "Plan mode" / "Pair Programming mode" / "Execute mode"
@@ -65,6 +73,9 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 	if r := p.parseMCPApproval(content); r != nil {
 		return r
 	}
+	if r := p.parseQuestionDialog(content); r != nil {
+		return r
+	}
 	if r := p.parseUserInputRequest(content); r != nil {
 		return r
 	}
@@ -104,6 +115,12 @@ func (p *CodexParser) isIdleAtBottom(content string) bool {
 	hasIdle := false
 	for _, line := range bottom {
 		trimmed := strings.TrimSpace(line)
+
+		// Question dialog footer indicators (RequestUserInputOverlay)
+		if strings.Contains(trimmed, "enter to submit answer") ||
+			strings.Contains(trimmed, "enter to submit all") {
+			return false
+		}
 
 		// Active indicators that override idle signals
 		if trimmed == "Working" || strings.HasPrefix(trimmed, "Working") {
@@ -246,6 +263,80 @@ func (p *CodexParser) parseMCPApproval(content string) *Result {
 		},
 		Recommended: 0,
 		Reasoning:   "deterministic parser: Codex MCP server approval dialog detected",
+	}
+}
+
+// parseQuestionDialog detects the Codex RequestUserInputOverlay question dialog.
+//
+// Source: codex-rs/tui/src/bottom_pane/request_user_input/mod.rs
+// The overlay renders a question with numbered options ("› 1. Label" or "  1. Label"),
+// footer tips like "enter to submit answer" or "enter to submit all", and optionally
+// "None of the above" for is_other questions.
+func (p *CodexParser) parseQuestionDialog(content string) *Result {
+	lines := strings.Split(content, "\n")
+	bottom := bottomNonEmpty(lines, bottomLines)
+
+	// Detection: "enter to submit answer" or "enter to submit all" in footer.
+	// These are unique to the RequestUserInputOverlay and don't appear in
+	// approval dialogs (which use "Press Enter to confirm or Esc to cancel").
+	hasSubmitFooter := false
+	for _, line := range bottom {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "enter to submit answer") ||
+			strings.Contains(trimmed, "enter to submit all") {
+			hasSubmitFooter = true
+			break
+		}
+	}
+	if !hasSubmitFooter {
+		return nil
+	}
+
+	// Extract question text and options for WaitingFor.
+	waitingFor := extractQuestionSummary(lines)
+
+	// Count numbered options. Codex renders them as "› 1. Label" (selected)
+	// or "  1. Label" (unselected). We strip leading "› " before checking.
+	optionCount := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Strip the Codex selection cursor "› " prefix
+		stripped := strings.TrimLeft(trimmed, "› ")
+		if isNumberedOption(stripped) {
+			optionCount++
+		}
+	}
+
+	actions := make([]model.Action, 0, optionCount+2)
+	for i := 1; i <= optionCount && i <= 9; i++ {
+		actions = append(actions, model.Action{
+			Keys:  fmt.Sprintf("%d", i),
+			Label: fmt.Sprintf("select option %d", i),
+			Risk:  "low",
+			Raw:   true,
+		})
+	}
+	actions = append(actions, model.Action{
+		Keys:  "Enter",
+		Label: "submit answer",
+		Risk:  "low",
+		Raw:   true,
+	})
+	actions = append(actions, model.Action{
+		Keys:  "Escape",
+		Label: "interrupt / dismiss",
+		Risk:  "low",
+		Raw:   true,
+	})
+
+	return &Result{
+		Agent:       "codex",
+		Blocked:     true,
+		Reason:      "question dialog waiting for answer",
+		WaitingFor:  waitingFor,
+		Actions:     actions,
+		Recommended: 0,
+		Reasoning:   "deterministic parser: Codex question dialog detected (enter to submit footer)",
 	}
 }
 

@@ -1125,3 +1125,352 @@ func TestClaude_PermissionScrolledOff(t *testing.T) {
 		t.Errorf("WaitingFor should include context above 'Do you want to proceed?', got:\n%s", result.WaitingFor)
 	}
 }
+
+// --- OpenCode Question Dialog Tests ---
+
+func TestOpenCode_QuestionDialogSingleQuestion(t *testing.T) {
+	// OpenCode question tool: single question with numbered options.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  Which database should I use?
+
+  1. PostgreSQL
+     Best for complex queries
+  2. SQLite
+     Good for embedded use
+  3. Type your own answer
+
+  ↑↓ select  enter submit  esc dismiss
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result for question dialog")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+	if !strings.Contains(result.WaitingFor, "database") {
+		t.Errorf("WaitingFor should contain question text, got: %q", result.WaitingFor)
+	}
+	// Should have actions for 3 options + dismiss
+	if len(result.Actions) < 4 {
+		t.Errorf("expected at least 4 actions (3 options + dismiss), got %d", len(result.Actions))
+	}
+	// First action should be "1" key
+	if result.Actions[0].Keys != "1" {
+		t.Errorf("first action keys: got %q, want %q", result.Actions[0].Keys, "1")
+	}
+	// Last action should be Escape
+	lastAction := result.Actions[len(result.Actions)-1]
+	if lastAction.Keys != "Escape" {
+		t.Errorf("last action keys: got %q, want %q", lastAction.Keys, "Escape")
+	}
+}
+
+func TestOpenCode_QuestionDialogMultiQuestion(t *testing.T) {
+	// Multi-question form with tab-style headers.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  Database      Config      Confirm
+
+  Which database should I use?
+
+  1. PostgreSQL
+  2. SQLite
+
+  ⇆ tab  ↑↓ select  enter confirm  esc dismiss
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result for multi-question dialog")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for multi-question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestOpenCode_QuestionNotOverriddenByIdlePrompt(t *testing.T) {
+	// Question footer "↑↓ select" should prevent idle detection even
+	// when ">" prompt is visible in the bottom lines.
+	content := `
+  Pick a framework
+
+  1. React
+  2. Vue
+
+  ↑↓ select  enter submit  esc dismiss
+
+  >
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q — question dialog should override idle prompt",
+			result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestOpenCode_StaleQuestionInScrollback(t *testing.T) {
+	// Stale question dialog text in scrollback, agent now idle at prompt.
+	// The question footer has scrolled above the bottom 8 lines window.
+	content := `
+  Pick a framework
+
+  1. React
+  2. Vue
+
+  ↑↓ select  enter submit  esc dismiss
+
+  Selected React. Proceeding with React setup.
+  Installing dependencies...
+  Setup complete. Here's what I did:
+  1. Created package.json
+  2. Installed React and ReactDOM
+  3. Created src/App.jsx
+
+  >
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale question should be ignored",
+			result.Reason, "idle at prompt")
+	}
+}
+
+func TestOpenCode_QuestionDialogMultiSelect(t *testing.T) {
+	// Multi-select question with [✓]/[ ] prefixes.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  Which features do you need? (select all that apply)
+
+  1. [✓] Authentication
+  2. [ ] Database
+  3. [ ] API routes
+  4. Type your own answer
+
+  ↑↓ select  enter toggle  esc dismiss
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result for multi-select question")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for multi-select question")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+// --- Codex Question Dialog Tests ---
+
+func TestCodex_QuestionDialogSingle(t *testing.T) {
+	// Codex RequestUserInputOverlay: single question with numbered options.
+	// Source: codex-rs/tui/src/bottom_pane/request_user_input/mod.rs
+	content := `
+  What is your preferred testing framework?
+
+  › 1. Jest
+    Popular JavaScript testing framework.
+    2. Vitest
+    Fast Vite-native testing framework.
+    3. None of the above
+    Optionally, add details in notes (tab).
+
+  enter to submit answer | esc to interrupt
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result for Codex question dialog")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+	if !strings.Contains(result.WaitingFor, "testing framework") {
+		t.Errorf("WaitingFor should contain question text, got: %q", result.WaitingFor)
+	}
+}
+
+func TestCodex_QuestionDialogMultiQuestion(t *testing.T) {
+	// Multi-question form with "enter to submit all" footer.
+	content := `
+  Choose a database engine.
+
+  › 1. PostgreSQL
+    Robust relational database.
+    2. SQLite
+    Embedded database.
+
+  enter to submit all | esc to interrupt
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result for multi-question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestCodex_QuestionNotOverriddenByIdlePrompt(t *testing.T) {
+	// Question footer should prevent idle detection.
+	content := `
+  Pick a tool.
+
+  › 1. Webpack
+    2. Vite
+
+  enter to submit answer | esc to interrupt
+
+  >
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q — question dialog should override idle prompt",
+			result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestCodex_StaleQuestionInScrollback(t *testing.T) {
+	// Stale question dialog in scrollback, agent now idle at prompt.
+	content := `
+  What is your preferred testing framework?
+
+  › 1. Jest
+    2. Vitest
+
+  enter to submit answer | esc to interrupt
+
+  Selected Jest. Setting up test configuration.
+  Created jest.config.js
+  Added test scripts to package.json
+  Ready for next task.
+
+  Plan mode  shift+tab to cycle
+
+  >
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale question should be ignored",
+			result.Reason, "idle at prompt")
+	}
+}
+
+func TestCodex_QuestionDialogFreeform(t *testing.T) {
+	// Freeform question with no options (just notes input).
+	// Source: mod.rs — when options is None/empty, focus goes to Notes.
+	content := `
+  What should the project name be?
+
+  enter to submit answer | esc to interrupt
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result for freeform question")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for freeform question")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+// --- Shared Helper Tests ---
+
+func TestExtractQuestionSummary(t *testing.T) {
+	lines := strings.Split(`
+  Which database should I use?
+
+  1. PostgreSQL
+     Best for complex queries
+  2. SQLite
+     Good for embedded use
+  3. Type your own answer
+
+  ↑↓ select  enter submit  esc dismiss
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if !strings.Contains(summary, "database") {
+		t.Errorf("summary should contain question text, got: %q", summary)
+	}
+	if !strings.Contains(summary, "1. PostgreSQL") {
+		t.Errorf("summary should contain first option, got: %q", summary)
+	}
+	if !strings.Contains(summary, "2. SQLite") {
+		t.Errorf("summary should contain second option, got: %q", summary)
+	}
+}
+
+func TestCountNumberedOptions(t *testing.T) {
+	lines := strings.Split(`
+  1. Option A
+     Description
+  2. Option B
+     Description
+  3. Type your own answer
+`, "\n")
+	count := countNumberedOptions(lines)
+	if count != 3 {
+		t.Errorf("expected 3 options, got %d", count)
+	}
+}
+
+func TestIsNumberedOption(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"1. PostgreSQL", true},
+		{"2. SQLite", true},
+		{"9. Last option", true},
+		{"1.Created package.json", true}, // edge case: no space after period
+		{"0. Zero", false},               // starts at 1, not 0
+		{"A. Alpha", false},
+		{"", false},
+		{"1", false},
+		{"Just text", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isNumberedOption(tt.input)
+			if got != tt.want {
+				t.Errorf("isNumberedOption(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}

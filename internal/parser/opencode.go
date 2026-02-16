@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/timvw/pane-patrol/internal/model"
@@ -15,6 +16,15 @@ import (
 // Footer: "⇆ select  enter confirm"
 // Active: Knight Rider scanner (■/⬝ or ⬥◆⬩⬪·), Build/Plan indicators
 // Idle: input prompt visible, no active indicators
+//
+// Source reference: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+// packages/opencode/src/tool/question.ts
+// Question dialog: agent asks user a question with numbered options.
+//   - Single-question: options listed as "1.", "2.", etc. with labels.
+//   - Multi-question: tab-style headers at top (question headers + "Confirm" tab).
+//   - Custom answer: last option is "Type your own answer".
+//   - Multi-select: options prefixed with "[✓]" or "[ ]".
+//   - Footer: "⇆ tab" (multi-question), "↑↓ select", "enter confirm/toggle/submit", "esc dismiss"
 type OpenCodeParser struct{}
 
 func (p *OpenCodeParser) Name() string { return "opencode" }
@@ -46,6 +56,9 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 		return r
 	}
 	if r := p.parseRejectDialog(content); r != nil {
+		return r
+	}
+	if r := p.parseQuestionDialog(content); r != nil {
 		return r
 	}
 
@@ -93,6 +106,14 @@ func (p *OpenCodeParser) isIdleAtBottom(content string) bool {
 		}
 		// Permission dialog footer
 		if strings.Contains(trimmed, "⇆ select") && strings.Contains(trimmed, "enter confirm") {
+			return false
+		}
+		// Question dialog footer: "↑↓ select" is unique to question dialogs
+		// (permission dialogs use "⇆ select" instead).
+		if strings.Contains(trimmed, "↑↓") && strings.Contains(trimmed, "select") {
+			return false
+		}
+		if strings.Contains(trimmed, "esc dismiss") {
 			return false
 		}
 
@@ -153,6 +174,11 @@ func (p *OpenCodeParser) isOpenCode(content string, processTree []string) bool {
 	}
 	// OpenCode footer pattern: "⇆ select  enter confirm"
 	if strings.Contains(content, "⇆ select") {
+		return true
+	}
+	// Question dialog footer: "↑↓ select" + "esc dismiss"
+	if strings.Contains(content, "↑↓") && strings.Contains(content, "select") &&
+		strings.Contains(content, "esc dismiss") {
 		return true
 	}
 	return false
@@ -245,6 +271,65 @@ func (p *OpenCodeParser) isActiveExecution(content string) bool {
 		}
 	}
 	return false
+}
+
+// parseQuestionDialog detects the OpenCode question tool dialog.
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+// The question dialog renders numbered options (1., 2., etc.) with an
+// "↑↓ select" + "esc dismiss" footer. It may also show "Type your own answer"
+// as the last option and "⇆ tab" for multi-question navigation.
+func (p *OpenCodeParser) parseQuestionDialog(content string) *Result {
+	lines := strings.Split(content, "\n")
+	bottom := bottomNonEmpty(lines, bottomLines)
+
+	// Detection: look for question dialog footer indicators in bottom lines.
+	// "↑↓" + "select" is unique to the question dialog (permission dialog uses
+	// "⇆ select" + "enter confirm" instead).
+	hasQuestionFooter := false
+	for _, line := range bottom {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "↑↓") && strings.Contains(trimmed, "select") {
+			hasQuestionFooter = true
+			break
+		}
+	}
+	if !hasQuestionFooter {
+		return nil
+	}
+
+	// Extract question text and options for WaitingFor.
+	waitingFor := extractQuestionSummary(lines)
+
+	// Build actions. Number keys directly select options in OpenCode's question dialog.
+	// Count visible numbered options in the bottom portion to avoid stale matches.
+	optionCount := countNumberedOptions(lines)
+
+	actions := make([]model.Action, 0, optionCount+1)
+	for i := 1; i <= optionCount && i <= 9; i++ {
+		actions = append(actions, model.Action{
+			Keys:  fmt.Sprintf("%d", i),
+			Label: fmt.Sprintf("select option %d", i),
+			Risk:  "low",
+			Raw:   true,
+		})
+	}
+	actions = append(actions, model.Action{
+		Keys:  "Escape",
+		Label: "dismiss question",
+		Risk:  "low",
+		Raw:   true,
+	})
+
+	return &Result{
+		Agent:       "opencode",
+		Blocked:     true,
+		Reason:      "question dialog waiting for answer",
+		WaitingFor:  waitingFor,
+		Actions:     actions,
+		Recommended: 0,
+		Reasoning:   "deterministic parser: OpenCode question dialog detected (↑↓ select footer)",
+	}
 }
 
 // extractBlock extracts a contextual block of text around a marker line.
