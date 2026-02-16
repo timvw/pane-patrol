@@ -594,6 +594,50 @@ more stuff after`
 	}
 }
 
+func TestExtractBlockWithContext(t *testing.T) {
+	content := `some output
+
+  Bash: git log --oneline -10
+  Working directory: /home/user/project
+
+  Do you want to proceed?
+  ❯ 1. Yes  2. Yes, and don't ask again  3. No`
+
+	block := extractBlockWithContext(content, "Do you want to proceed?", 6)
+	if !contains(block, "git log") {
+		t.Errorf("block should contain context above marker, got:\n%s", block)
+	}
+	if !contains(block, "Do you want to proceed?") {
+		t.Error("block should contain the marker itself")
+	}
+	if !contains(block, "Yes") {
+		t.Error("block should contain options below marker")
+	}
+}
+
+func TestClaude_PermissionScrolledOff(t *testing.T) {
+	// When "Claude needs your permission" has scrolled off, only
+	// "Do you want to proceed?" is visible. The WaitingFor should
+	// still include context lines above it (tool name, command).
+	content := `
+  Bash: git log --oneline -10
+  Working directory: /home/user/project
+
+  Do you want to proceed?
+  ❯ 1. Yes  2. Yes, and don't ask again  3. No
+
+? for shortcuts
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !contains(result.WaitingFor, "git log") {
+		t.Errorf("WaitingFor should include context above 'Do you want to proceed?', got:\n%s", result.WaitingFor)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)
 }

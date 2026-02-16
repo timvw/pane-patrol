@@ -113,7 +113,10 @@ func (p *ClaudeCodeParser) parsePermissionDialog(content string) *Result {
 	if hasPermission {
 		waitingFor = extractBlock(content, "Claude needs your permission")
 	} else {
-		waitingFor = extractBlock(content, "Do you want to proceed?")
+		// "Claude needs your permission" may have scrolled off screen.
+		// Look backwards from "Do you want to proceed?" to capture context
+		// (tool name, command, file path) that appears above the prompt.
+		waitingFor = extractBlockWithContext(content, "Do you want to proceed?", 6)
 	}
 
 	// Determine if "don't ask again" option is available

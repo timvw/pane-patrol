@@ -1094,10 +1094,13 @@ func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int)
 	// Show pane target (e.g. ":0.1") indented under the session
 	paneLabel := fmt.Sprintf(":%d.%d", v.Window, v.Pane)
 
-	// Sanitize reason: collapse newlines/tabs to spaces and truncate.
-	// The LLM sometimes returns multi-line reasons or JSON fragments
-	// which would break the row-based TUI layout.
-	reason := strings.Join(strings.Fields(v.Reason), " ")
+	// Show WaitingFor (what the agent is actually blocked on) if available,
+	// otherwise fall back to Reason. Collapse to a single line for the row.
+	reasonText := v.Reason
+	if v.WaitingFor != "" {
+		reasonText = v.WaitingFor
+	}
+	reason := strings.Join(strings.Fields(reasonText), " ")
 	reason = truncate(reason, reasonWidth-1)
 
 	var nameCol, reasonCol string
