@@ -788,12 +788,22 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 //   - Escape: close text input and return to list
 func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+
 	case "esc", "escape":
 		m.editing = false
 		m.textInput.Blur()
 		m.textInput.SetValue("")
 		m.focus = panelList
 		return m, nil
+
+	case "q":
+		// When text input is empty, q quits the app (consistent with other panels).
+		// When text is present, fall through to forward the keystroke to the input.
+		if m.textInput.Value() == "" {
+			return m, tea.Quit
+		}
 
 	case "up", "k":
 		if m.actionCursor > 0 {
