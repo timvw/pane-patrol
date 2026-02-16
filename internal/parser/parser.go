@@ -90,3 +90,37 @@ func bottomNonEmpty(lines []string, n int) []string {
 	}
 	return lines[start:end]
 }
+
+// progressVerbs are tool-specific action words used by Claude Code in its
+// progress messages (e.g., "Fetching…", "Reading file.go…").
+var progressVerbs = []string{
+	"Fetching", "Reading", "Writing", "Searching", "Running", "Executing",
+}
+
+// hasProgressVerb returns true if the trimmed line looks like an active
+// progress message. Matches two patterns:
+//
+//  1. Line ends with the verb, optionally followed by ellipsis:
+//     "Fetching…", "Reading...", bare "Fetching"
+//  2. Line starts with the verb and ends with ellipsis (verb + argument):
+//     "Fetching https://api.example.com/data…"
+//     "Reading src/main.go…"
+//
+// This avoids false matches on mid-sentence English like
+// "Reading the file was successful" (no ellipsis, verb not at end).
+func hasProgressVerb(trimmed string) bool {
+	hasEllipsis := strings.HasSuffix(trimmed, "…") || strings.HasSuffix(trimmed, "...")
+	for _, verb := range progressVerbs {
+		// Pattern 1: verb at end of line (with or without ellipsis)
+		if strings.HasSuffix(trimmed, verb) ||
+			strings.HasSuffix(trimmed, verb+"…") ||
+			strings.HasSuffix(trimmed, verb+"...") {
+			return true
+		}
+		// Pattern 2: verb at start + ellipsis at end (e.g., "Fetching url…")
+		if hasEllipsis && strings.HasPrefix(trimmed, verb) {
+			return true
+		}
+	}
+	return false
+}
