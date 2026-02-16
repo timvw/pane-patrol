@@ -258,9 +258,12 @@ func (m *tuiModel) rebuildGroups() {
 		return m.groups[i].name < m.groups[j].name
 	})
 
-	// Auto-expand single-pane sessions
+	// Auto-expand sessions that have blocked panes (the ones that need
+	// attention), and single-pane sessions (no benefit to collapsing).
+	// Sessions with only active/non-blocked panes stay collapsed.
+	// Users can still manually collapse/expand with Enter or left/right.
 	for _, g := range m.groups {
-		if len(g.verdicts) == 1 {
+		if len(g.verdicts) == 1 || g.blocked > 0 {
 			m.expanded[g.name] = true
 		}
 	}
