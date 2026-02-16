@@ -63,6 +63,9 @@ type Verdict struct {
 	// Content is the raw pane capture. Only populated when verbose mode is enabled.
 	Content string `json:"content,omitempty"`
 
+	// EvalSource records how this verdict was produced: "parser", "llm", or "cache".
+	EvalSource string `json:"eval_source"`
+
 	// Model is the LLM model that produced this verdict.
 	Model string `json:"model"`
 	// Provider is the LLM provider used (e.g., "anthropic", "openai").

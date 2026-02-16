@@ -52,7 +52,7 @@ matching a regex pattern. Use --parallel to evaluate concurrently.`,
 		// Apply exclude_sessions from config file
 		cfg, cfgErr := config.Load()
 		if cfgErr == nil && len(cfg.ExcludeSessions) > 0 {
-			filtered := panes[:0]
+			filtered := make([]model.Pane, 0, len(panes))
 			for _, p := range panes {
 				if !config.MatchesExcludeList(p.Session, cfg.ExcludeSessions) {
 					filtered = append(filtered, p)
@@ -77,6 +77,7 @@ matching a regex pattern. Use --parallel to evaluate concurrently.`,
 		}
 
 		// Evaluate panes with bounded parallelism.
+		registry := parser.NewRegistry()
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, parallel)
 		errCh := make(chan error, len(panes))
@@ -89,9 +90,14 @@ matching a regex pattern. Use --parallel to evaluate concurrently.`,
 				defer func() { <-sem }()
 
 				start := time.Now()
-				v, err := evaluatePane(ctx, m, eval, p)
+				v, err := evaluatePane(ctx, m, eval, registry, p)
 				if err != nil {
 					errCh <- fmt.Errorf("pane %s: %w", p.Target, err)
+					evalModel, evalProvider := "", ""
+					if eval != nil {
+						evalModel = eval.Model()
+						evalProvider = eval.Provider()
+					}
 					// Return a verdict with error info instead of failing the whole scan.
 					verdicts[idx] = model.Verdict{
 						Target:      p.Target,
@@ -102,8 +108,8 @@ matching a regex pattern. Use --parallel to evaluate concurrently.`,
 						Agent:       "error",
 						Blocked:     false,
 						Reason:      fmt.Sprintf("evaluation failed: %v", err),
-						Model:       eval.Model(),
-						Provider:    eval.Provider(),
+						Model:       evalModel,
+						Provider:    evalProvider,
 						EvaluatedAt: time.Now().UTC(),
 						DurationMs:  time.Since(start).Milliseconds(),
 					}
@@ -129,7 +135,7 @@ matching a regex pattern. Use --parallel to evaluate concurrently.`,
 
 // evaluatePane captures and evaluates a single pane.
 // Uses deterministic parsers first; falls back to LLM for unrecognized agents.
-func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluator, pane model.Pane) (*model.Verdict, error) {
+func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluator, registry *parser.Registry, pane model.Pane) (*model.Verdict, error) {
 	start := time.Now()
 
 	capture, err := m.CapturePane(ctx, pane.Target)
@@ -140,7 +146,6 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 	content := model.BuildProcessHeader(pane) + capture
 
 	// Tier 1: Deterministic parsers for known agents.
-	registry := parser.NewRegistry()
 	if parsed := registry.Parse(capture, pane.ProcessTree); parsed != nil {
 		verdict := &model.Verdict{
 			Target:      pane.Target,
@@ -155,6 +160,7 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 			Reasoning:   parsed.Reasoning,
 			Actions:     parsed.Actions,
 			Recommended: parsed.Recommended,
+			EvalSource:  "parser",
 			Model:       "deterministic",
 			Provider:    "parser",
 			EvaluatedAt: time.Now().UTC(),
@@ -167,6 +173,9 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 	}
 
 	// Tier 2: LLM fallback.
+	if eval == nil {
+		return nil, fmt.Errorf("no deterministic parser matched and no API key configured for LLM fallback")
+	}
 	llmVerdict, err := eval.Evaluate(ctx, content)
 	if err != nil {
 		return nil, fmt.Errorf("evaluation failed: %w", err)
@@ -186,6 +195,7 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 		Actions:     llmVerdict.Actions,
 		Recommended: llmVerdict.Recommended,
 		Usage:       llmVerdict.Usage,
+		EvalSource:  "llm",
 		Model:       eval.Model(),
 		Provider:    eval.Provider(),
 		EvaluatedAt: time.Now().UTC(),

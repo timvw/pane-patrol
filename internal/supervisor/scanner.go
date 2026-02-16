@@ -106,6 +106,11 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: pane %s: %v\n", p.Target, err)
 				s.Metrics.RecordEvaluation(ctx, "error")
+				evalModel, evalProvider := "", ""
+				if s.Evaluator != nil {
+					evalModel = s.Evaluator.Model()
+					evalProvider = s.Evaluator.Provider()
+				}
 				verdicts[idx] = model.Verdict{
 					Target:      p.Target,
 					Session:     p.Session,
@@ -115,15 +120,15 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 					Agent:       "error",
 					Blocked:     false,
 					Reason:      fmt.Sprintf("evaluation failed: %v", err),
-					Model:       s.Evaluator.Model(),
-					Provider:    s.Evaluator.Provider(),
+					EvalSource:  "error",
+					Model:       evalModel,
+					Provider:    evalProvider,
 					EvaluatedAt: time.Now().UTC(),
 					DurationMs:  time.Since(start).Milliseconds(),
 				}
 				return
 			}
-			// Detect cache hit: zero usage means no LLM call was made
-			if v.Usage.InputTokens == 0 && v.Usage.OutputTokens == 0 {
+			if v.EvalSource == "cache" {
 				atomic.AddInt64(&cacheHits, 1)
 			}
 			verdicts[idx] = *v
@@ -193,6 +198,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 	if s.Cache != nil {
 		if cached, ok := s.Cache.Lookup(pane.Target, content); ok {
 			cached.DurationMs = time.Since(start).Milliseconds()
+			cached.EvalSource = "cache"
 			// Zero out usage for cache hits — no LLM call was made
 			cached.Usage = model.TokenUsage{}
 
@@ -235,6 +241,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 				Actions:     parsed.Actions,
 				Recommended: parsed.Recommended,
 				Usage:       model.TokenUsage{}, // No LLM call
+				EvalSource:  "parser",
 				Model:       "deterministic",
 				Provider:    "parser",
 				EvaluatedAt: time.Now().UTC(),
@@ -280,6 +287,9 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 	}
 
 	// --- Tier 2: LLM fallback for unrecognized agents ---
+	if s.Evaluator == nil {
+		return nil, fmt.Errorf("no deterministic parser matched and no API key configured for LLM fallback")
+	}
 	// Record cache miss only when falling through to LLM (parser hits are
 	// not cache misses in the meaningful sense — they bypass both caches).
 	s.Metrics.RecordCacheMiss(ctx)
@@ -302,6 +312,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		Actions:     llmVerdict.Actions,
 		Recommended: llmVerdict.Recommended,
 		Usage:       llmVerdict.Usage,
+		EvalSource:  "llm",
 		Model:       s.Evaluator.Model(),
 		Provider:    s.Evaluator.Provider(),
 		EvaluatedAt: time.Now().UTC(),

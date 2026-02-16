@@ -77,9 +77,11 @@ func getEvaluator() (evaluator.Evaluator, error) {
 
 // newEvaluatorFromConfig is the single evaluator factory used by both
 // the check/scan commands (via getEvaluator) and the supervisor command.
+// Returns (nil, nil) when no API key is configured — callers must handle
+// a nil evaluator gracefully (parser-only mode).
 func newEvaluatorFromConfig(cfg *config.Config) (evaluator.Evaluator, error) {
 	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("no API key found. Set api_key in config file, or PANE_PATROL_API_KEY / AZURE_OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY env var")
+		return nil, nil
 	}
 
 	extraHeaders := map[string]string{}

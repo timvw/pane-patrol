@@ -76,6 +76,7 @@ parsers. Unknown agents fall back to LLM evaluation.`,
 				Reasoning:   parsed.Reasoning,
 				Actions:     parsed.Actions,
 				Recommended: parsed.Recommended,
+				EvalSource:  "parser",
 				Model:       "deterministic",
 				Provider:    "parser",
 				EvaluatedAt: time.Now().UTC(),
@@ -83,6 +84,9 @@ parsers. Unknown agents fall back to LLM evaluation.`,
 			}
 		} else {
 			// Tier 2: LLM fallback.
+			if eval == nil {
+				return fmt.Errorf("no deterministic parser matched pane %q and no API key configured for LLM fallback", target)
+			}
 			llmVerdict, err := eval.Evaluate(cmd.Context(), content)
 			if err != nil {
 				return fmt.Errorf("evaluation failed for %q: %w", target, err)
@@ -101,6 +105,7 @@ parsers. Unknown agents fall back to LLM evaluation.`,
 				Actions:     llmVerdict.Actions,
 				Recommended: llmVerdict.Recommended,
 				Usage:       llmVerdict.Usage,
+				EvalSource:  "llm",
 				Model:       eval.Model(),
 				Provider:    eval.Provider(),
 				EvaluatedAt: time.Now().UTC(),
