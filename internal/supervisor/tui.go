@@ -357,6 +357,7 @@ func (m *tuiModel) executeSelectedAction() tea.Cmd {
 	// Invalidate cache so the next scan re-evaluates this pane
 	if m.scanner.Cache != nil {
 		m.scanner.Cache.Invalidate(v.Target)
+		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 	}
 	m.focus = panelList
 	m.scanning = true
@@ -758,6 +759,7 @@ func (m *tuiModel) handleTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Invalidate cache so the next scan re-evaluates this pane
 			if m.scanner.Cache != nil {
 				m.scanner.Cache.Invalidate(target)
+				m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 			}
 			// Navigate tmux to the target pane
 			if errMsg := jumpToPane(target); errMsg != "" {
@@ -1239,6 +1241,7 @@ func (m *tuiModel) autoNudgeCmd() tea.Cmd {
 		// Invalidate cache so the next scan re-evaluates this pane
 		if m.scanner.Cache != nil {
 			m.scanner.Cache.Invalidate(v.Target)
+			m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 		}
 	}
 
@@ -1286,35 +1289,46 @@ func jumpToPane(target string) string {
 	return ""
 }
 
-// truncate cuts a string to at most maxLen characters.
+// truncate cuts a string to at most maxLen runes (not bytes), appending "..."
+// when truncation occurs. This is safe for multi-byte UTF-8 strings from LLM output.
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	if maxLen <= 3 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
-// wrapText wraps a string into lines of at most maxLen characters, breaking at spaces.
+// wrapText wraps a string into lines of at most maxLen runes, breaking at spaces.
+// Uses rune-aware slicing to avoid cutting multi-byte UTF-8 characters.
 func wrapText(s string, maxLen int) []string {
 	if maxLen <= 0 {
 		return []string{s}
 	}
+	runes := []rune(s)
 	var lines []string
-	for len(s) > 0 {
-		if len(s) <= maxLen {
-			lines = append(lines, s)
+	for len(runes) > 0 {
+		if len(runes) <= maxLen {
+			lines = append(lines, string(runes))
 			break
 		}
 		// Find last space before maxLen
 		cut := maxLen
-		if idx := strings.LastIndex(s[:maxLen], " "); idx > 0 {
-			cut = idx
+		for i := maxLen - 1; i > 0; i-- {
+			if runes[i] == ' ' {
+				cut = i
+				break
+			}
 		}
-		lines = append(lines, s[:cut])
-		s = strings.TrimLeft(s[cut:], " ")
+		lines = append(lines, string(runes[:cut]))
+		// Skip leading spaces
+		for cut < len(runes) && runes[cut] == ' ' {
+			cut++
+		}
+		runes = runes[cut:]
 	}
 	return lines
 }

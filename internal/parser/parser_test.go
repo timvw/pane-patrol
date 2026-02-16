@@ -781,6 +781,29 @@ Fetching https://api.example.com/data…
 	}
 }
 
+func TestClaude_SearchingWithShortcutsFooter(t *testing.T) {
+	// Claude Code "Searching: ..." + "? for shortcuts" coexist in the bottom lines.
+	// The colon suffix indicates streaming output — active, not idle.
+	content := `Some previous output
+✻ Worked for 2m 10s
+
+Searching: found 3 results in src/
+
+? for shortcuts
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: 'Searching:' in bottom lines should override '? for shortcuts' footer")
+	}
+	if result.Reason != "actively executing" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "actively executing")
+	}
+}
+
 func TestClaude_ThinkingWithPrompt(t *testing.T) {
 	// Claude Code "✻ Pondering…" appears near the bottom alongside the prompt.
 	// This can happen briefly during state transitions.

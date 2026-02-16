@@ -98,6 +98,9 @@ func (t *Tmux) run(ctx context.Context, args ...string) (string, error) {
 }
 
 // getProcessTree returns the command lines of all descendant processes of the given PID.
+// Uses a single "ps -eo pid,ppid,args" call to snapshot all processes, then builds
+// the tree in Go — O(1) subprocess invocations instead of O(N) per scan.
+//
 // Walks up to maxProcessTreeDepth levels deep to capture subprocesses spawned by
 // agents (covers wrapper scripts, version manager shims, and agent binaries).
 // The result is capped at maxProcessTreeEntries to avoid flooding the LLM prompt
@@ -110,48 +113,84 @@ func getProcessTree(pid int) []string {
 	if pid <= 0 {
 		return nil
 	}
-	tree := collectProcessTree(pid, 0)
-	if len(tree) > maxProcessTreeEntries {
-		tree = tree[:maxProcessTreeEntries]
-	}
-	return tree
-}
 
-// collectProcessTree recursively collects child process command lines.
-// Each level of nesting is indented with two additional spaces.
-func collectProcessTree(pid, depth int) []string {
-	if pid <= 0 || depth >= maxProcessTreeDepth {
-		return nil
-	}
-
-	// pgrep -P finds direct children of the given PID
-	cmd := exec.Command("pgrep", "-P", strconv.Itoa(pid))
+	// Single subprocess call: snapshot all processes with their parent PID.
+	// "pid=" and "ppid=" suppress the header; "args=" gives full command line.
+	cmd := exec.Command("ps", "-eo", "pid=,ppid=,args=")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
 
-	indent := strings.Repeat("  ", depth)
+	// Build parent -> children map and pid -> args map.
+	type proc struct {
+		pid  int
+		ppid int
+		args string
+	}
+	children := map[int][]proc{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "  PID  PPID ARGS..." — fields are space-separated,
+		// but ARGS can contain spaces. Split into at most 3 fields.
+		fields := strings.SplitN(line, " ", 3)
+		if len(fields) < 3 {
+			// Try harder: ps output may have variable whitespace between PID and PPID.
+			fields = strings.Fields(line)
+			if len(fields) < 3 {
+				continue
+			}
+			// Rejoin everything after the second field as args.
+			// Find the position after the second number in the original line.
+			rest := line
+			for i := 0; i < 2; i++ {
+				rest = strings.TrimSpace(rest)
+				idx := strings.IndexByte(rest, ' ')
+				if idx < 0 {
+					rest = ""
+					break
+				}
+				rest = rest[idx:]
+			}
+			rest = strings.TrimSpace(rest)
+			fields = []string{fields[0], fields[1], rest}
+		}
+
+		p, err1 := strconv.Atoi(strings.TrimSpace(fields[0]))
+		pp, err2 := strconv.Atoi(strings.TrimSpace(fields[1]))
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		args := strings.TrimSpace(fields[2])
+		if args == "" {
+			continue
+		}
+		children[pp] = append(children[pp], proc{pid: p, ppid: pp, args: args})
+	}
+
+	// Walk the tree from the root PID using BFS with depth tracking.
 	var tree []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		childPID := strings.TrimSpace(line)
-		if childPID == "" {
+	type entry struct {
+		pid   int
+		depth int
+	}
+	queue := []entry{{pid: pid, depth: 0}}
+	for len(queue) > 0 && len(tree) < maxProcessTreeEntries {
+		e := queue[0]
+		queue = queue[1:]
+		if e.depth >= maxProcessTreeDepth {
 			continue
 		}
-		// Get the full command line of this child process
-		ps := exec.Command("ps", "-o", "args=", "-p", childPID)
-		psOut, err := ps.Output()
-		if err != nil {
-			continue
-		}
-		args := strings.TrimSpace(string(psOut))
-		if args != "" {
-			tree = append(tree, indent+args)
-		}
-		// Recurse into grandchildren
-		cpid, err := strconv.Atoi(childPID)
-		if err == nil {
-			tree = append(tree, collectProcessTree(cpid, depth+1)...)
+		indent := strings.Repeat("  ", e.depth)
+		for _, child := range children[e.pid] {
+			if len(tree) >= maxProcessTreeEntries {
+				break
+			}
+			tree = append(tree, indent+child.args)
+			queue = append(queue, entry{pid: child.pid, depth: e.depth + 1})
 		}
 	}
 	return tree

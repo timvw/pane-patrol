@@ -214,7 +214,15 @@ func mergeEnv(cfg *Config) {
 		cfg.OTELHeaders = v
 	}
 
-	// API key fallbacks
+	resolveAPIKeyAndBaseURL(cfg)
+}
+
+// resolveAPIKeyAndBaseURL fills in API key from provider-specific env vars
+// and resolves Azure base URL from AZURE_RESOURCE_NAME. This is the shared
+// logic used by both mergeEnv (config.Load path) and ResolveEnvDefaults
+// (CLI flag path).
+func resolveAPIKeyAndBaseURL(cfg *Config) {
+	// API key fallbacks: Azure > Anthropic > OpenAI
 	if cfg.APIKey == "" {
 		if v := os.Getenv("AZURE_OPENAI_API_KEY"); v != "" {
 			cfg.APIKey = v
@@ -231,7 +239,7 @@ func mergeEnv(cfg *Config) {
 		}
 	}
 
-	// Azure base URL fallback
+	// Azure base URL: derive from AZURE_RESOURCE_NAME when no explicit base URL
 	if cfg.BaseURL == "" {
 		if rn := os.Getenv("AZURE_RESOURCE_NAME"); rn != "" {
 			switch cfg.Provider {
@@ -287,34 +295,7 @@ func ResolveEnvDefaults(cfg *Config) {
 		}
 	}
 
-	// API key fallbacks
-	if cfg.APIKey == "" {
-		if v := os.Getenv("AZURE_OPENAI_API_KEY"); v != "" {
-			cfg.APIKey = v
-		}
-	}
-	if cfg.APIKey == "" {
-		if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
-			cfg.APIKey = v
-		}
-	}
-	if cfg.APIKey == "" {
-		if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-			cfg.APIKey = v
-		}
-	}
-
-	// Azure base URL fallback
-	if cfg.BaseURL == "" {
-		if rn := os.Getenv("AZURE_RESOURCE_NAME"); rn != "" {
-			switch cfg.Provider {
-			case "anthropic":
-				cfg.BaseURL = fmt.Sprintf("https://%s.services.ai.azure.com/anthropic/", rn)
-			case "openai":
-				cfg.BaseURL = fmt.Sprintf("https://%s.openai.azure.com/openai/v1", rn)
-			}
-		}
-	}
+	resolveAPIKeyAndBaseURL(cfg)
 }
 
 // IsAzureEndpoint returns true if the URL is an Azure endpoint.

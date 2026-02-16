@@ -131,9 +131,8 @@ func (p *ClaudeCodeParser) isIdleAtBottom(content string) bool {
 		}
 
 		// Tool-specific progress messages override idle signals.
-		// Match "Fetching…", "Reading...", or bare "Fetching" at end of line
-		// (verb just appeared, ellipsis not yet rendered). Suffix-based to
-		// avoid false matches on mid-sentence English ("Reading the file…").
+		// Matches verb at end of line (suffix), verb+ellipsis, or
+		// verb+args+ellipsis (prefix). See hasProgressVerb doc for details.
 		if hasProgressVerb(trimmed) {
 			return false
 		}

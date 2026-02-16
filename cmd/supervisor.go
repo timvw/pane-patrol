@@ -51,7 +51,8 @@ func runSupervisor(cmd *cobra.Command) error {
 		autoEmbedInTmux()
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // cancels in-flight scan goroutines when the TUI exits
 
 	// Load configuration: defaults -> config file -> env vars.
 	// Also apply any CLI flags that were set on the root command.
@@ -113,8 +114,18 @@ func runSupervisor(cmd *cobra.Command) error {
 	// Generate a session ID to group all scans from this supervisor run
 	sessionID := fmt.Sprintf("ps-%d-%d", os.Getpid(), time.Now().Unix())
 
-	// Resolve own pane to skip self-evaluation
+	// Resolve own pane to skip self-evaluation.
+	// Also exclude the entire session containing this pane — other panes in
+	// the supervisor session (e.g., from split windows) are not useful to scan
+	// and would show as a collapsed session row in the TUI.
 	selfTarget := resolveSelfTarget()
+	if selfTarget != "" {
+		if colonIdx := strings.LastIndex(selfTarget, ":"); colonIdx > 0 {
+			selfSession := selfTarget[:colonIdx]
+			cfg.ExcludeSessions = append(cfg.ExcludeSessions, selfSession)
+			fmt.Fprintf(os.Stderr, "self-session: %s (excluded from scans)\n", selfSession)
+		}
+	}
 
 	var metrics *telem.Metrics
 	if tel != nil {
