@@ -24,18 +24,9 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 		return nil
 	}
 
-	// Check states in priority order: permission dialog > reject dialog >
-	// active execution > idle at prompt.
-
-	if r := p.parsePermissionDialog(content); r != nil {
-		return r
-	}
-	if r := p.parseRejectDialog(content); r != nil {
-		return r
-	}
-	// Check idle at bottom BEFORE active execution: if the bottom of the
-	// screen shows a clear idle prompt, stale active indicators above it
-	// are from a prior turn and should be ignored.
+	// Check idle at bottom FIRST: if the bottom of the screen shows a clear
+	// idle prompt, any dialog text or active indicators above it are stale
+	// (from a prior turn or the agent's own output) and should be ignored.
 	if p.isIdleAtBottom(content) {
 		return &Result{
 			Agent:      "opencode",
@@ -48,6 +39,14 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 			Recommended: 0,
 			Reasoning:   "deterministic parser: OpenCode TUI detected, idle prompt at bottom of screen",
 		}
+	}
+
+	// Not idle — check for dialog states.
+	if r := p.parsePermissionDialog(content); r != nil {
+		return r
+	}
+	if r := p.parseRejectDialog(content); r != nil {
+		return r
 	}
 
 	if p.isActiveExecution(content) {
@@ -75,17 +74,51 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 
 // isIdleAtBottom checks if the bottom of the screen shows a clear idle
 // prompt. OpenCode's idle state has "> " prompt line.
+//
+// Returns false if active execution indicators are also present in the bottom
+// lines — the input prompt may briefly coexist with active indicators during
+// state transitions.
 func (p *OpenCodeParser) isIdleAtBottom(content string) bool {
 	lines := strings.Split(content, "\n")
 	bottom := bottomNonEmpty(lines, bottomLines)
+	hasPrompt := false
 	for _, line := range bottom {
 		trimmed := strings.TrimSpace(line)
+
+		// Dialog indicators that override idle signals: the reject dialog
+		// has a "> " text input prompt that looks like the idle prompt, but
+		// coexists with "△ Reject permission" or "△ Permission required".
+		if strings.Contains(trimmed, "△ Reject permission") || strings.Contains(trimmed, "△ Permission required") {
+			return false
+		}
+		// Permission dialog footer
+		if strings.Contains(trimmed, "⇆ select") && strings.Contains(trimmed, "enter confirm") {
+			return false
+		}
+
+		// Active indicators that override idle signals
+		if strings.Contains(trimmed, "■") && strings.Contains(trimmed, "⬝") {
+			return false
+		}
+		if strings.Contains(trimmed, "⬥") || strings.Contains(trimmed, "⬩") || strings.Contains(trimmed, "⬪") {
+			return false
+		}
+		if strings.Contains(trimmed, "esc interrupt") || strings.Contains(trimmed, "esc to interrupt") ||
+			strings.Contains(trimmed, "esc again to interrupt") || strings.Contains(trimmed, "press esc to stop") {
+			return false
+		}
+		for _, r := range trimmed {
+			if r >= '⠋' && r <= '⠿' {
+				return false
+			}
+		}
+
+		// Idle signal
 		if trimmed == ">" || strings.HasPrefix(trimmed, "> ") {
-			// Make sure there's no active indicator BELOW the prompt
-			return true
+			hasPrompt = true
 		}
 	}
-	return false
+	return hasPrompt
 }
 
 // isOpenCode checks if this pane is running OpenCode based on the process tree

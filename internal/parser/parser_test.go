@@ -635,7 +635,9 @@ func TestOpenCode_StaleSpinnerInScrollback(t *testing.T) {
 }
 
 func TestCodex_StaleWorkingInScrollback(t *testing.T) {
-	// Stale "Working" from a previous turn visible above an idle prompt.
+	// Stale "Working" from a previous turn visible in scrollback, with enough
+	// output below it that the stale indicators are pushed above the bottom 8
+	// non-empty lines window.
 	content := `
   Working
 
@@ -644,6 +646,11 @@ func TestCodex_StaleWorkingInScrollback(t *testing.T) {
   (12s · esc to interrupt)
 
   Task completed. Made the requested changes.
+  Here is line 1 of the output.
+  Here is line 2 of the output.
+  Here is line 3 of the output.
+  Here is line 4 of the output.
+  Here is line 5 of the output.
 
   Plan mode  shift+tab to cycle
 
@@ -660,11 +667,18 @@ func TestCodex_StaleWorkingInScrollback(t *testing.T) {
 }
 
 func TestCodex_StaleApprovalAboveIdle(t *testing.T) {
-	// Stale "✔ You approved codex to run" from a previous action visible above idle prompt.
+	// Stale "✔ You approved codex to run" from a previous action visible in
+	// scrollback, with enough output below to push it above the bottom 8
+	// non-empty lines window.
 	content := `
   ✔ You approved codex to run git status
 
   Here is the status output...
+  On branch main
+  Your branch is up to date with 'origin/main'.
+  Changes not staged for commit:
+    modified: src/main.go
+  no changes added to commit
 
   Plan mode  shift+tab to cycle
 
@@ -677,6 +691,246 @@ func TestCodex_StaleApprovalAboveIdle(t *testing.T) {
 	}
 	if !result.Blocked {
 		t.Error("expected blocked=true: stale '✔ You approved' should not override idle prompt at bottom")
+	}
+}
+
+// --- Idle/Active Coexistence Tests ---
+// These tests verify that when both idle and active indicators appear in the
+// bottom 8 lines, active wins. This differs from the scrollback tests above
+// where active indicators were far above the bottom window.
+
+func TestCodex_WorkingWithPlanModeFooter(t *testing.T) {
+	// Codex "Working" + "Plan mode shift+tab" coexist in the bottom lines.
+	// The footer is persistent; active should win.
+	content := `Working
+
+  └ Reading file src/main.go
+
+  (12s · esc to interrupt)
+
+  Plan mode  shift+tab to cycle
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: 'Working' in bottom lines should override 'Plan mode' footer")
+	}
+	if result.Reason != "actively working" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "actively working")
+	}
+}
+
+func TestClaude_FetchingWithShortcutsFooter(t *testing.T) {
+	// Claude Code "Fetching…" + "? for shortcuts" coexist in the bottom lines.
+	// Active tool progress should override the idle footer.
+	content := `Some previous output
+✻ Worked for 2m 10s
+
+Fetching https://api.example.com/data…
+
+? for shortcuts
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: 'Fetching…' in bottom lines should override '? for shortcuts' footer")
+	}
+	if result.Reason != "actively executing" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "actively executing")
+	}
+}
+
+func TestClaude_ThinkingWithPrompt(t *testing.T) {
+	// Claude Code "✻ Pondering…" appears near the bottom alongside the prompt.
+	// This can happen briefly during state transitions.
+	content := `Some output
+
+✻ Pondering… (30s · ↓ 1.2k tokens)
+
+❯
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: active '✻ Pondering…' should override idle prompt")
+	}
+}
+
+func TestOpenCode_SpinnerWithPrompt(t *testing.T) {
+	// OpenCode braille spinner coexists with ">" prompt in the bottom lines.
+	content := `Some output
+
+⠋ Running task...
+
+>
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: braille spinner in bottom lines should override idle prompt")
+	}
+}
+
+func TestOpenCode_EscInterruptWithPrompt(t *testing.T) {
+	// OpenCode "esc interrupt" status bar coexists with ">" prompt.
+	content := `Some output
+
+esc interrupt
+
+>
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: 'esc interrupt' should override idle prompt")
+	}
+}
+
+// --- Stale Dialog in Scrollback/Output Tests ---
+// These tests verify that dialog trigger strings appearing in scrollback or in
+// the agent's own output text are ignored when the bottom of the screen shows
+// a clear idle prompt.
+
+func TestClaude_StalePermissionInAgentOutput(t *testing.T) {
+	// The agent wrote output that discusses permission dialogs. The trigger
+	// strings "Do you want to proceed?" and "Claude needs your permission"
+	// appear as quoted text in the output, not as a live dialog.
+	content := `  The parser checks for "Claude needs your permission" in the content.
+  When the header has scrolled off, it scans backwards from "Do you want to proceed?"
+  collecting up to 6 non-empty lines.
+  Some more analysis text here.
+  Another line of output.
+  And the conclusion of the review.
+
+❯
+? for shortcuts
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true (idle at prompt)")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale dialog text in output should be ignored", result.Reason, "idle at prompt")
+	}
+}
+
+func TestClaude_StalePermissionDialogInScrollback(t *testing.T) {
+	// A previous permission dialog was approved and the agent has returned
+	// to the idle prompt. The dialog text is still visible in scrollback.
+	content := `  Claude needs your permission to use Bash
+
+  $ rm -rf /tmp/old-build
+
+  Do you want to proceed?
+  ❯ 1. Yes  2. Yes, and don't ask again  3. No
+
+  ✻ Worked for 45s
+
+  Cleaned up the old build artifacts. Ready for next task.
+  Here is what I did:
+  1. Removed /tmp/old-build directory
+  2. Verified no remaining files
+
+❯
+? for shortcuts
+`
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, []string{"claude"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true (idle at prompt)")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale permission dialog should be ignored", result.Reason, "idle at prompt")
+	}
+}
+
+func TestCodex_StaleExecApprovalInScrollback(t *testing.T) {
+	// Codex previously showed a command approval dialog, it was approved,
+	// and the agent has returned to idle. The dialog text is in scrollback.
+	content := `  Would you like to run the following command?
+
+  $ npm test
+
+  Yes, proceed   Yes, and don't ask again   No
+
+  ✔ You approved codex to run npm test
+  All tests passed.
+  Here are the results:
+  5 test suites, 42 tests passed
+  Coverage: 87%
+
+  Plan mode  shift+tab to cycle
+
+  >
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true (idle at prompt)")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale approval dialog should be ignored", result.Reason, "idle at prompt")
+	}
+}
+
+func TestOpenCode_StalePermissionInScrollback(t *testing.T) {
+	// OpenCode previously showed a permission dialog, it was approved, and
+	// the agent has returned to idle. The dialog text is in scrollback with
+	// enough output below to push dialog indicators above the bottom 8 lines.
+	content := `  △ Permission required
+
+  # Bash command
+  $ git diff HEAD~3
+
+  Allow once  Allow always  Reject
+  ⇆ select  enter confirm
+  Permission granted.
+  Here is the diff output:
+  + added new feature
+  - removed old code
+  + another addition
+  - another removal
+  Changes verified.
+  All looks good.
+  Ready for next task.
+
+  >
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true (idle at prompt)")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale permission dialog should be ignored", result.Reason, "idle at prompt")
 	}
 }
 

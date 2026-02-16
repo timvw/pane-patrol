@@ -35,6 +35,24 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 		return nil
 	}
 
+	// Check idle at bottom FIRST: if the bottom of the screen shows a clear
+	// idle prompt, any dialog text or active indicators above it are stale
+	// (from a prior turn or the agent's own output) and should be ignored.
+	if p.isIdleAtBottom(content) {
+		return &Result{
+			Agent:      "codex",
+			Blocked:    true,
+			Reason:     "idle at prompt",
+			WaitingFor: "idle at prompt",
+			Actions: []model.Action{
+				{Keys: "Enter", Label: "submit / continue", Risk: "low", Raw: true},
+			},
+			Recommended: 0,
+			Reasoning:   "deterministic parser: Codex TUI detected, idle prompt at bottom of screen",
+		}
+	}
+
+	// Not idle — check for dialog states.
 	if r := p.parseExecApproval(content); r != nil {
 		return r
 	}
@@ -49,22 +67,6 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 	}
 	if r := p.parseUserInputRequest(content); r != nil {
 		return r
-	}
-	// Check idle at bottom BEFORE active execution: if the bottom of the
-	// screen shows a clear idle prompt, stale active indicators above it
-	// are from a prior turn and should be ignored.
-	if p.isIdleAtBottom(content) {
-		return &Result{
-			Agent:      "codex",
-			Blocked:    true,
-			Reason:     "idle at prompt",
-			WaitingFor: "idle at prompt",
-			Actions: []model.Action{
-				{Keys: "Enter", Label: "submit / continue", Risk: "low", Raw: true},
-			},
-			Recommended: 0,
-			Reasoning:   "deterministic parser: Codex TUI detected, idle prompt at bottom of screen",
-		}
 	}
 
 	if p.isActiveExecution(content) {
@@ -92,19 +94,40 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 
 // isIdleAtBottom checks if the bottom of the screen shows a clear idle
 // prompt. Codex's idle state has ">" prompt and/or "Plan mode  shift+tab to cycle".
+//
+// Returns false if active execution indicators are also present in the bottom
+// lines — the "Plan mode" footer is persistent and can coexist with "Working"
+// during active execution.
 func (p *CodexParser) isIdleAtBottom(content string) bool {
 	lines := strings.Split(content, "\n")
 	bottom := bottomNonEmpty(lines, bottomLines)
+	hasIdle := false
 	for _, line := range bottom {
 		trimmed := strings.TrimSpace(line)
+
+		// Active indicators that override idle signals
+		if trimmed == "Working" || strings.HasPrefix(trimmed, "Working") {
+			return false
+		}
+		if strings.Contains(trimmed, "to interrupt)") {
+			return false
+		}
+		if strings.HasPrefix(trimmed, "└ ") || strings.HasPrefix(trimmed, "└") {
+			return false
+		}
+		if strings.Contains(trimmed, "✔ You approved codex to run") {
+			return false
+		}
+
+		// Idle signals
 		if trimmed == ">" || strings.HasPrefix(trimmed, "> ") {
-			return true
+			hasIdle = true
 		}
 		if strings.Contains(trimmed, "Plan mode") && strings.Contains(trimmed, "shift+tab") {
-			return true
+			hasIdle = true
 		}
 	}
-	return false
+	return hasIdle
 }
 
 func (p *CodexParser) isCodex(content string, processTree []string) bool {

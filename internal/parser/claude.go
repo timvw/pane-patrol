@@ -2,6 +2,7 @@ package parser
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/timvw/pane-patrol/internal/model"
 )
@@ -40,18 +41,11 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 		return nil
 	}
 
-	if r := p.parsePermissionDialog(content); r != nil {
-		return r
-	}
-	if r := p.parseEditApproval(content); r != nil {
-		return r
-	}
-	if r := p.parseAutoResolve(content); r != nil {
-		return r
-	}
-	// Check idle at bottom BEFORE active execution: if the bottom of the
-	// screen shows a clear idle prompt, stale active indicators above it
-	// are from a prior turn and should be ignored.
+	// Check idle at bottom FIRST: if the bottom of the screen shows a clear
+	// idle prompt, any dialog text or active indicators above it are stale
+	// (from a prior turn or the agent's own output) and should be ignored.
+	// This prevents false positives from stale "Do you want to proceed?" or
+	// "Claude needs your permission" text in scrollback/agent output.
 	if p.isIdleAtBottom(content) {
 		return &Result{
 			Agent:      "claude_code",
@@ -64,6 +58,17 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 			Recommended: 0,
 			Reasoning:   "deterministic parser: Claude Code TUI detected, idle prompt at bottom of screen",
 		}
+	}
+
+	// Not idle — check for dialog states (permission, edit, auto-resolve).
+	if r := p.parsePermissionDialog(content); r != nil {
+		return r
+	}
+	if r := p.parseEditApproval(content); r != nil {
+		return r
+	}
+	if r := p.parseAutoResolve(content); r != nil {
+		return r
 	}
 
 	if p.isActiveExecution(content) {
@@ -92,23 +97,59 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 // isIdleAtBottom checks if the bottom of the screen shows a clear idle
 // prompt. Claude Code's idle state has "❯" prompt and/or "? for shortcuts"
 // footer, with "✻ Worked for" (completed, not active).
+//
+// Returns false if active execution indicators are also present in the bottom
+// lines — the "? for shortcuts" footer may persist during execution, and
+// tool-specific progress messages (Fetching…, Running…) override idle signals.
 func (p *ClaudeCodeParser) isIdleAtBottom(content string) bool {
 	lines := strings.Split(content, "\n")
 	bottom := bottomNonEmpty(lines, bottomLines)
 	hasPrompt := false
 	for _, line := range bottom {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "❯" || trimmed == ">" || strings.HasPrefix(trimmed, "❯ ") {
-			hasPrompt = true
-		}
-		if trimmed == "? for shortcuts" {
-			hasPrompt = true
-		}
-		// If there's an active "✻ Verb…" at the bottom, NOT idle
+
+		// Active "✻ Verb…" at the bottom = NOT idle
 		if strings.HasPrefix(trimmed, "✻") && !strings.HasPrefix(trimmed, "✻ Worked") {
 			if strings.Contains(trimmed, "…") || strings.Contains(trimmed, "...") {
 				return false
 			}
+		}
+
+		// Tool-specific progress messages override idle signals
+		if strings.HasSuffix(trimmed, "…") || strings.HasSuffix(trimmed, "...") {
+			if strings.Contains(trimmed, "Fetching") || strings.Contains(trimmed, "Reading") ||
+				strings.Contains(trimmed, "Writing") || strings.Contains(trimmed, "Searching") ||
+				strings.Contains(trimmed, "Running") || strings.Contains(trimmed, "Executing") {
+				return false
+			}
+		}
+		// Active tool use with streaming output
+		if strings.Contains(trimmed, "Searching:") {
+			return false
+		}
+		// Braille spinner characters indicate active execution
+		for _, r := range trimmed {
+			if r >= '⠋' && r <= '⠿' {
+				return false
+			}
+		}
+
+		// Dialog selector line: "❯ 1. Yes ..." — the Select component is
+		// active, which means a permission/edit dialog is on screen.
+		// This overrides any idle signals (e.g., "? for shortcuts" footer).
+		if isDialogSelector(trimmed) {
+			return false
+		}
+
+		// Idle signals: bare prompt or prompt with user-typed text.
+		if trimmed == "❯" || trimmed == ">" {
+			hasPrompt = true
+		}
+		if strings.HasPrefix(trimmed, "❯ ") {
+			hasPrompt = true
+		}
+		if trimmed == "? for shortcuts" {
+			hasPrompt = true
 		}
 	}
 	return hasPrompt
@@ -173,8 +214,9 @@ func (p *ClaudeCodeParser) parsePermissionDialog(content string) *Result {
 			Keys: "3", Label: "deny (no)", Risk: "low", Raw: true,
 		})
 	} else {
+		// Without "don't ask again", dialog shows: 1. Yes, 2. No
 		actions = append(actions, model.Action{
-			Keys: "Escape", Label: "deny (cancel)", Risk: "low", Raw: true,
+			Keys: "2", Label: "deny (no)", Risk: "low", Raw: true,
 		})
 	}
 
@@ -198,7 +240,7 @@ func (p *ClaudeCodeParser) parseEditApproval(content string) *Result {
 	waitingFor := p.extractEditSummary(content)
 
 	// Edit approval also uses the Select component with numbered options.
-	// Typically: 1. Yes, 2. No (or similar)
+	// Dialog shows: 1. Yes, 2. No
 	return &Result{
 		Agent:      "claude_code",
 		Blocked:    true,
@@ -206,7 +248,7 @@ func (p *ClaudeCodeParser) parseEditApproval(content string) *Result {
 		WaitingFor: waitingFor,
 		Actions: []model.Action{
 			{Keys: "1", Label: "approve edit", Risk: "medium", Raw: true},
-			{Keys: "Escape", Label: "reject edit", Risk: "low", Raw: true},
+			{Keys: "2", Label: "reject edit", Risk: "low", Raw: true},
 		},
 		Recommended: 0,
 		Reasoning:   "deterministic parser: Claude Code edit approval dialog detected",
@@ -384,4 +426,17 @@ func (p *ClaudeCodeParser) extractEditSummary(content string) string {
 func (p *ClaudeCodeParser) hasNumberedOptions(content string) bool {
 	return strings.Contains(content, "1.") && strings.Contains(content, "2.") &&
 		(strings.Contains(content, "Yes") || strings.Contains(content, "No"))
+}
+
+// isDialogSelector returns true if the line looks like a Claude Code Select
+// component cursor line: "❯ 1. Yes ..." or "❯ 2. No". These have the "❯ "
+// prefix followed by a digit and period. This distinguishes them from idle
+// prompt lines like "❯ " or "❯ user typed text".
+func isDialogSelector(trimmed string) bool {
+	const prefix = "❯ "
+	if !strings.HasPrefix(trimmed, prefix) {
+		return false
+	}
+	rest := trimmed[len(prefix):]
+	return len(rest) >= 2 && unicode.IsDigit(rune(rest[0])) && rest[1] == '.'
 }
