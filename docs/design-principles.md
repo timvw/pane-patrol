@@ -53,7 +53,14 @@ State is derived from what is directly observable:
 - Session/pane topology comes from `list-sessions` / `list-panes` — the
   multiplexer's live state.
 
-No shadow state files, no PID tracking, no in-memory caches that can drift.
+No shadow state files, no PID tracking, no caches that can drift from reality.
+
+**Note on the verdict cache:** The supervisor uses a content-hash cache
+(SHA256 of pane content) with TTL expiry and active invalidation on
+nudge actions. This is compatible with the observable-reality principle
+because the cache key IS the observed content — if any pixel changes
+(a spinner frame, a new log line), the hash changes and the cache misses.
+The TTL ensures periodic re-evaluation even when content is static.
 
 ## Composable commands
 

@@ -21,8 +21,8 @@ func TestDefaults(t *testing.T) {
 	if cfg.Parallel != 10 {
 		t.Errorf("Parallel: got %d, want %d", cfg.Parallel, 10)
 	}
-	if cfg.Refresh != "30s" {
-		t.Errorf("Refresh: got %q, want %q", cfg.Refresh, "30s")
+	if cfg.Refresh != "10s" {
+		t.Errorf("Refresh: got %q, want %q", cfg.Refresh, "10s")
 	}
 }
 

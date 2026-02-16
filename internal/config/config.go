@@ -63,7 +63,7 @@ func Defaults() *Config {
 		Model:     "claude-sonnet-4-5",
 		MaxTokens: 4096,
 		Parallel:  10,
-		Refresh:   "30s",
+		Refresh:   "10s",
 		CacheTTL:  "2m",
 	}
 }

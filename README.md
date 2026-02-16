@@ -13,6 +13,62 @@ Following [ZFC (Zero False Commands)](docs/design-principles.md) principles,
 
 ![Supervisor TUI — blocked agents with suggested actions](docs/images/supervisor-blocked.png)
 
+## How it works
+
+When running multiple AI coding agents across tmux panes, they frequently
+get **blocked waiting for human input** — confirmation dialogs, permission
+prompts, questions, or just finishing a task and sitting idle at their
+input prompt. With several agents running in parallel, you're constantly
+cycling through tmux windows checking if anything is stuck.
+
+The supervisor solves this with a continuous scan loop (every 10s by default):
+
+1. **List** all tmux panes
+2. **Filter** — skip excluded sessions, skip the supervisor's own pane
+3. **For each pane:**
+   - **Capture** visible terminal content via `tmux capture-pane`
+   - **Collect process metadata** — shell PID and child process tree
+     (via `pgrep -P` and `ps`), prepended as a `[Process Info]` header
+   - **Check cache** — SHA256 hash of content; if unchanged since last
+     scan and within TTL (2m default), reuse the previous verdict
+   - **Evaluate via LLM** — send content + process info to the configured
+     model. The LLM returns: agent type, blocked status, reason, suggested
+     actions with risk levels, a recommended action, and step-by-step
+     reasoning
+4. **Display** results in the interactive TUI
+5. **Wait** for next refresh tick or user action
+
+### ZFC: Zero False Commands
+
+The [ZFC principle](docs/design-principles.md) (inspired by
+[Gastown](https://github.com/steveyegge/gastown)) means **Go transports,
+AI decides**. Go code never interprets pane content — no regex matching,
+no hardcoded process name lists, no "idle > N minutes" heuristics. The
+LLM makes all classification decisions.
+
+The LLM is instructed to check the **bottom of the screen first** (most
+recent state) and treat any active execution signal anywhere on screen
+(spinners, build indicators, streaming output) as NOT blocked. It also
+recognizes that supervisor/monitoring TUIs like pane-patrol itself are
+not AI agents.
+
+### Why the cache works
+
+The cache is content-hash based — it only hits when the pane content is
+byte-for-byte identical to the previous scan. This naturally handles the
+active vs. blocked distinction:
+
+- **Active agents** have animated spinners (braille characters cycling at
+  80ms, Knight Rider blocks at 40ms) that change the captured content
+  between scans → cache miss → fresh LLM evaluation
+- **Blocked agents** show a static prompt that doesn't change → cache
+  hit → no LLM call needed
+- **Non-agent panes** (idle shells, logs) are also static → cache hit
+
+This means frequent scanning is cheap: blocked panes (the ones you
+actually care about detecting) are cached, while active panes get fresh
+evaluations that quickly confirm "not blocked."
+
 ## Installation
 
 ### Homebrew (macOS / Linux)
@@ -150,7 +206,7 @@ exclude_sessions:
   - "AIGGTM-*"    # prefix glob: matches AIGGTM-1234, AIGGTM-foo, etc.
 
 # Auto-refresh interval (set to "0" or "off" to disable)
-refresh: 30s
+refresh: 10s
 
 # Verdict cache TTL — reuse LLM results when pane content hasn't changed.
 # Set to "0" or "off" to disable caching. Default: 2m.
