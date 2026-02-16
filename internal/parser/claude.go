@@ -115,16 +115,12 @@ func (p *ClaudeCodeParser) isIdleAtBottom(content string) bool {
 			}
 		}
 
-		// Tool-specific progress messages override idle signals
-		if strings.HasSuffix(trimmed, "…") || strings.HasSuffix(trimmed, "...") {
-			if strings.Contains(trimmed, "Fetching") || strings.Contains(trimmed, "Reading") ||
-				strings.Contains(trimmed, "Writing") || strings.Contains(trimmed, "Searching") ||
-				strings.Contains(trimmed, "Running") || strings.Contains(trimmed, "Executing") {
-				return false
-			}
-		}
-		// Active tool use with streaming output
-		if strings.Contains(trimmed, "Searching:") {
+		// Tool-specific progress messages override idle signals.
+		// Check with and without ellipsis — "Fetching" alone indicates
+		// active execution even if the ellipsis hasn't rendered yet.
+		if strings.Contains(trimmed, "Fetching") || strings.Contains(trimmed, "Reading") ||
+			strings.Contains(trimmed, "Writing") || strings.Contains(trimmed, "Searching") ||
+			strings.Contains(trimmed, "Running") || strings.Contains(trimmed, "Executing") {
 			return false
 		}
 		// Braille spinner characters indicate active execution

@@ -147,7 +147,7 @@ func (n *Nudger) nudgeRaw(paneID, keys string) error {
 // intentional multi-key sequences ("Down Enter"). Free-form text input
 // uses nudgeLiteral (raw=false), which does not call this function.
 func splitKeySequence(keys string) []string {
-	parts := strings.Split(keys, " ")
+	parts := strings.Fields(keys)
 	if len(parts) <= 1 {
 		return []string{keys}
 	}

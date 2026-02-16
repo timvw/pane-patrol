@@ -111,21 +111,13 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 					evalModel = s.Evaluator.Model()
 					evalProvider = s.Evaluator.Provider()
 				}
-				verdicts[idx] = model.Verdict{
-					Target:      p.Target,
-					Session:     p.Session,
-					Window:      p.Window,
-					Pane:        p.Pane,
-					Command:     p.Command,
-					Agent:       "error",
-					Blocked:     false,
-					Reason:      fmt.Sprintf("evaluation failed: %v", err),
-					EvalSource:  model.EvalSourceError,
-					Model:       evalModel,
-					Provider:    evalProvider,
-					EvaluatedAt: time.Now().UTC(),
-					DurationMs:  time.Since(start).Milliseconds(),
-				}
+				v := model.BaseVerdict(p, start)
+				v.Agent = "error"
+				v.Reason = fmt.Sprintf("evaluation failed: %v", err)
+				v.EvalSource = model.EvalSourceError
+				v.Model = evalModel
+				v.Provider = evalProvider
+				verdicts[idx] = v
 				return
 			}
 			if v.EvalSource == model.EvalSourceCache {
@@ -227,26 +219,18 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 	// Try parsers first — instant, free, 100% accurate for known agents.
 	if s.Parsers != nil {
 		if parsed := s.Parsers.Parse(capture, pane.ProcessTree); parsed != nil {
-			verdict := &model.Verdict{
-				Target:      pane.Target,
-				Session:     pane.Session,
-				Window:      pane.Window,
-				Pane:        pane.Pane,
-				Command:     pane.Command,
-				Agent:       parsed.Agent,
-				Blocked:     parsed.Blocked,
-				Reason:      parsed.Reason,
-				WaitingFor:  parsed.WaitingFor,
-				Reasoning:   parsed.Reasoning,
-				Actions:     parsed.Actions,
-				Recommended: parsed.Recommended,
-				Usage:       model.TokenUsage{}, // No LLM call
-				EvalSource:  model.EvalSourceParser,
-				Model:       "deterministic",
-				Provider:    "parser",
-				EvaluatedAt: time.Now().UTC(),
-				DurationMs:  time.Since(start).Milliseconds(),
-			}
+			v := model.BaseVerdict(pane, start)
+			v.Agent = parsed.Agent
+			v.Blocked = parsed.Blocked
+			v.Reason = parsed.Reason
+			v.WaitingFor = parsed.WaitingFor
+			v.Reasoning = parsed.Reasoning
+			v.Actions = parsed.Actions
+			v.Recommended = parsed.Recommended
+			v.EvalSource = model.EvalSourceParser
+			v.Model = "deterministic"
+			v.Provider = "parser"
+			verdict := &v
 
 			if s.Verbose {
 				verdict.Content = content
@@ -298,26 +282,19 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 		return nil, fmt.Errorf("evaluation failed: %w", err)
 	}
 
-	verdict := &model.Verdict{
-		Target:      pane.Target,
-		Session:     pane.Session,
-		Window:      pane.Window,
-		Pane:        pane.Pane,
-		Command:     pane.Command,
-		Agent:       llmVerdict.Agent,
-		Blocked:     llmVerdict.Blocked,
-		Reason:      llmVerdict.Reason,
-		WaitingFor:  llmVerdict.WaitingFor,
-		Reasoning:   llmVerdict.Reasoning,
-		Actions:     llmVerdict.Actions,
-		Recommended: llmVerdict.Recommended,
-		Usage:       llmVerdict.Usage,
-		EvalSource:  model.EvalSourceLLM,
-		Model:       s.Evaluator.Model(),
-		Provider:    s.Evaluator.Provider(),
-		EvaluatedAt: time.Now().UTC(),
-		DurationMs:  time.Since(start).Milliseconds(),
-	}
+	v := model.BaseVerdict(pane, start)
+	v.Agent = llmVerdict.Agent
+	v.Blocked = llmVerdict.Blocked
+	v.Reason = llmVerdict.Reason
+	v.WaitingFor = llmVerdict.WaitingFor
+	v.Reasoning = llmVerdict.Reasoning
+	v.Actions = llmVerdict.Actions
+	v.Recommended = llmVerdict.Recommended
+	v.Usage = llmVerdict.Usage
+	v.EvalSource = model.EvalSourceLLM
+	v.Model = s.Evaluator.Model()
+	v.Provider = s.Evaluator.Provider()
+	verdict := &v
 
 	if s.Verbose {
 		verdict.Content = content

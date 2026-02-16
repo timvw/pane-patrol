@@ -63,25 +63,17 @@ parsers. Unknown agents fall back to LLM evaluation.`,
 		registry := parser.NewRegistry()
 		var verdict model.Verdict
 		if parsed := registry.Parse(capture, pane.ProcessTree); parsed != nil {
-			verdict = model.Verdict{
-				Target:      pane.Target,
-				Session:     pane.Session,
-				Window:      pane.Window,
-				Pane:        pane.Pane,
-				Command:     pane.Command,
-				Agent:       parsed.Agent,
-				Blocked:     parsed.Blocked,
-				Reason:      parsed.Reason,
-				WaitingFor:  parsed.WaitingFor,
-				Reasoning:   parsed.Reasoning,
-				Actions:     parsed.Actions,
-				Recommended: parsed.Recommended,
-				EvalSource:  model.EvalSourceParser,
-				Model:       "deterministic",
-				Provider:    "parser",
-				EvaluatedAt: time.Now().UTC(),
-				DurationMs:  time.Since(start).Milliseconds(),
-			}
+			verdict = model.BaseVerdict(pane, start)
+			verdict.Agent = parsed.Agent
+			verdict.Blocked = parsed.Blocked
+			verdict.Reason = parsed.Reason
+			verdict.WaitingFor = parsed.WaitingFor
+			verdict.Reasoning = parsed.Reasoning
+			verdict.Actions = parsed.Actions
+			verdict.Recommended = parsed.Recommended
+			verdict.EvalSource = model.EvalSourceParser
+			verdict.Model = "deterministic"
+			verdict.Provider = "parser"
 		} else {
 			// Tier 2: LLM fallback.
 			if eval == nil {
@@ -91,26 +83,18 @@ parsers. Unknown agents fall back to LLM evaluation.`,
 			if err != nil {
 				return fmt.Errorf("evaluation failed for %q: %w", target, err)
 			}
-			verdict = model.Verdict{
-				Target:      pane.Target,
-				Session:     pane.Session,
-				Window:      pane.Window,
-				Pane:        pane.Pane,
-				Command:     pane.Command,
-				Agent:       llmVerdict.Agent,
-				Blocked:     llmVerdict.Blocked,
-				Reason:      llmVerdict.Reason,
-				WaitingFor:  llmVerdict.WaitingFor,
-				Reasoning:   llmVerdict.Reasoning,
-				Actions:     llmVerdict.Actions,
-				Recommended: llmVerdict.Recommended,
-				Usage:       llmVerdict.Usage,
-				EvalSource:  model.EvalSourceLLM,
-				Model:       eval.Model(),
-				Provider:    eval.Provider(),
-				EvaluatedAt: time.Now().UTC(),
-				DurationMs:  time.Since(start).Milliseconds(),
-			}
+			verdict = model.BaseVerdict(pane, start)
+			verdict.Agent = llmVerdict.Agent
+			verdict.Blocked = llmVerdict.Blocked
+			verdict.Reason = llmVerdict.Reason
+			verdict.WaitingFor = llmVerdict.WaitingFor
+			verdict.Reasoning = llmVerdict.Reasoning
+			verdict.Actions = llmVerdict.Actions
+			verdict.Recommended = llmVerdict.Recommended
+			verdict.Usage = llmVerdict.Usage
+			verdict.EvalSource = model.EvalSourceLLM
+			verdict.Model = eval.Model()
+			verdict.Provider = eval.Provider()
 		}
 
 		if flagVerbose {

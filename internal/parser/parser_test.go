@@ -590,13 +590,21 @@ func TestClaude_StaleProgressInScrollback(t *testing.T) {
 }
 
 func TestOpenCode_StaleBuildInScrollback(t *testing.T) {
-	// Stale "▣ Build" from a previous turn visible above an idle prompt.
+	// Stale "▣ Build" from a previous turn visible in scrollback, with enough
+	// output below to push it above the bottom non-empty lines window
+	// (see bottomLines const in parser.go).
 	content := `
   ▣ Build · claude-sonnet-4-5 · 45s
 
   ■■■■■■■■
 
   Build completed. Here are the results...
+  Line 1 of output.
+  Line 2 of output.
+  Line 3 of output.
+  Line 4 of output.
+  Line 5 of output.
+  Line 6 of output.
 
   > 
 `

@@ -306,6 +306,9 @@ func TestSplitKeySequence(t *testing.T) {
 		// Mixed control + literal: always split
 		{"hello world", []string{"hello", "world"}},
 		{"Down y", []string{"Down", "y"}},
+		// Extra spaces between tokens are collapsed
+		{"Down  Enter", []string{"Down", "Enter"}},
+		{" Down Enter ", []string{"Down", "Enter"}},
 	}
 
 	for _, tt := range tests {

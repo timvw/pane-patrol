@@ -107,6 +107,19 @@ func (p *OpenCodeParser) isIdleAtBottom(content string) bool {
 			strings.Contains(trimmed, "esc again to interrupt") || strings.Contains(trimmed, "press esc to stop") {
 			return false
 		}
+		// Build/Plan indicators (match isActiveExecution)
+		if strings.Contains(trimmed, "▣ Build") || strings.Contains(trimmed, "■ Build") ||
+			strings.Contains(trimmed, "▣ Plan") {
+			return false
+		}
+		// QUEUED label and active toolcall indicators
+		if strings.Contains(trimmed, "QUEUED") {
+			return false
+		}
+		if (strings.Contains(trimmed, "Task") || strings.Contains(trimmed, "task")) &&
+			strings.Contains(trimmed, "toolcall") && !strings.Contains(trimmed, "(0 toolcall") {
+			return false
+		}
 		for _, r := range trimmed {
 			if r >= '⠋' && r <= '⠿' {
 				return false

@@ -114,6 +114,21 @@ type TokenUsage struct {
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
 }
 
+// BaseVerdict returns a Verdict pre-filled with common pane identity and
+// timing fields. Callers set the remaining source-specific fields (Agent,
+// Blocked, Reason, EvalSource, etc.) directly.
+func BaseVerdict(pane Pane, start time.Time) Verdict {
+	return Verdict{
+		Target:      pane.Target,
+		Session:     pane.Session,
+		Window:      pane.Window,
+		Pane:        pane.Pane,
+		Command:     pane.Command,
+		EvaluatedAt: time.Now().UTC(),
+		DurationMs:  time.Since(start).Milliseconds(),
+	}
+}
+
 // BuildProcessHeader returns a process metadata header prepended to pane
 // content before evaluation. Provides context for both parsers and LLM.
 // Returns an empty string if no process info is available.

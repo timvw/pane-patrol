@@ -102,20 +102,13 @@ matching a regex pattern. Use --parallel to evaluate concurrently.`,
 						evalProvider = eval.Provider()
 					}
 					// Return a verdict with error info instead of failing the whole scan.
-					verdicts[idx] = model.Verdict{
-						Target:      p.Target,
-						Session:     p.Session,
-						Window:      p.Window,
-						Pane:        p.Pane,
-						Command:     p.Command,
-						Agent:       "error",
-						Blocked:     false,
-						Reason:      fmt.Sprintf("evaluation failed: %v", err),
-						Model:       evalModel,
-						Provider:    evalProvider,
-						EvaluatedAt: time.Now().UTC(),
-						DurationMs:  time.Since(start).Milliseconds(),
-					}
+					v := model.BaseVerdict(p, start)
+					v.Agent = "error"
+					v.Reason = fmt.Sprintf("evaluation failed: %v", err)
+					v.EvalSource = model.EvalSourceError
+					v.Model = evalModel
+					v.Provider = evalProvider
+					verdicts[idx] = v
 					return
 				}
 				verdicts[idx] = *v
@@ -150,25 +143,18 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 
 	// Tier 1: Deterministic parsers for known agents.
 	if parsed := registry.Parse(capture, pane.ProcessTree); parsed != nil {
-		verdict := &model.Verdict{
-			Target:      pane.Target,
-			Session:     pane.Session,
-			Window:      pane.Window,
-			Pane:        pane.Pane,
-			Command:     pane.Command,
-			Agent:       parsed.Agent,
-			Blocked:     parsed.Blocked,
-			Reason:      parsed.Reason,
-			WaitingFor:  parsed.WaitingFor,
-			Reasoning:   parsed.Reasoning,
-			Actions:     parsed.Actions,
-			Recommended: parsed.Recommended,
-			EvalSource:  model.EvalSourceParser,
-			Model:       "deterministic",
-			Provider:    "parser",
-			EvaluatedAt: time.Now().UTC(),
-			DurationMs:  time.Since(start).Milliseconds(),
-		}
+		v := model.BaseVerdict(pane, start)
+		v.Agent = parsed.Agent
+		v.Blocked = parsed.Blocked
+		v.Reason = parsed.Reason
+		v.WaitingFor = parsed.WaitingFor
+		v.Reasoning = parsed.Reasoning
+		v.Actions = parsed.Actions
+		v.Recommended = parsed.Recommended
+		v.EvalSource = model.EvalSourceParser
+		v.Model = "deterministic"
+		v.Provider = "parser"
+		verdict := &v
 		if flagVerbose {
 			verdict.Content = content
 		}
@@ -184,26 +170,19 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, eval evaluator.Evaluat
 		return nil, fmt.Errorf("evaluation failed: %w", err)
 	}
 
-	verdict := &model.Verdict{
-		Target:      pane.Target,
-		Session:     pane.Session,
-		Window:      pane.Window,
-		Pane:        pane.Pane,
-		Command:     pane.Command,
-		Agent:       llmVerdict.Agent,
-		Blocked:     llmVerdict.Blocked,
-		Reason:      llmVerdict.Reason,
-		WaitingFor:  llmVerdict.WaitingFor,
-		Reasoning:   llmVerdict.Reasoning,
-		Actions:     llmVerdict.Actions,
-		Recommended: llmVerdict.Recommended,
-		Usage:       llmVerdict.Usage,
-		EvalSource:  model.EvalSourceLLM,
-		Model:       eval.Model(),
-		Provider:    eval.Provider(),
-		EvaluatedAt: time.Now().UTC(),
-		DurationMs:  time.Since(start).Milliseconds(),
-	}
+	v := model.BaseVerdict(pane, start)
+	v.Agent = llmVerdict.Agent
+	v.Blocked = llmVerdict.Blocked
+	v.Reason = llmVerdict.Reason
+	v.WaitingFor = llmVerdict.WaitingFor
+	v.Reasoning = llmVerdict.Reasoning
+	v.Actions = llmVerdict.Actions
+	v.Recommended = llmVerdict.Recommended
+	v.Usage = llmVerdict.Usage
+	v.EvalSource = model.EvalSourceLLM
+	v.Model = eval.Model()
+	v.Provider = eval.Provider()
+	verdict := &v
 
 	if flagVerbose {
 		verdict.Content = content
