@@ -659,3 +659,166 @@ func TestClickSubmitAction_MultiSelect(t *testing.T) {
 		t.Errorf("expected focus=panelList after submit, got %v", m.focus)
 	}
 }
+
+// --- Cursor stability across scan rebuilds ---
+
+func TestCursorStability_ScanRebuildPreservesSelection(t *testing.T) {
+	// Simulate the bug: user selects pane B, a new pane appears in session A
+	// after rescan, cursor should stay on pane B (not jump to a different item).
+	ti := textinput.New()
+	ti.CharLimit = 2048
+	ti.Width = 80
+
+	m := &tuiModel{
+		verdicts: []model.Verdict{
+			{Target: "sessA:1.0", Session: "sessA", Agent: "opencode", Blocked: true,
+				Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+			{Target: "sessB:1.0", Session: "sessB", Agent: "opencode", Blocked: true,
+				Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+		},
+		focus:           panelList,
+		expanded:        map[string]bool{"sessA": true, "sessB": true},
+		manualCollapsed: make(map[string]bool),
+		textInput:       ti,
+		width:           120,
+		height:          40,
+	}
+	m.rebuildGroups()
+
+	// Find and select pane B
+	for i, item := range m.items {
+		if item.kind == itemPane && m.verdicts[item.paneIdx].Target == "sessB:1.0" {
+			m.cursor = i
+			break
+		}
+	}
+	if m.selectedVerdict().Target != "sessB:1.0" {
+		t.Fatalf("setup: expected sessB:1.0 selected, got %s", m.selectedVerdict().Target)
+	}
+
+	// Simulate scan result with a new pane inserted in session A.
+	// This shifts all items after it by 1 position.
+	prevKey := m.selectedItemKey()
+	m.verdicts = []model.Verdict{
+		{Target: "sessA:1.0", Session: "sessA", Agent: "opencode", Blocked: true,
+			Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+		{Target: "sessA:2.0", Session: "sessA", Agent: "opencode", Blocked: true,
+			Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+		{Target: "sessB:1.0", Session: "sessB", Agent: "opencode", Blocked: true,
+			Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+	}
+	m.rebuildGroups()
+	m.restoreCursorByKey(prevKey)
+
+	got := m.selectedVerdict()
+	if got == nil || got.Target != "sessB:1.0" {
+		target := "<nil>"
+		if got != nil {
+			target = got.Target
+		}
+		t.Errorf("cursor jumped: expected sessB:1.0, got %s (cursor=%d)", target, m.cursor)
+	}
+}
+
+func TestCursorStability_PaneDisappears(t *testing.T) {
+	// If the selected pane disappears, cursor should land on a valid pane
+	// (not crash or point to a session header).
+	ti := textinput.New()
+	ti.CharLimit = 2048
+	ti.Width = 80
+
+	m := &tuiModel{
+		verdicts: []model.Verdict{
+			{Target: "sessA:1.0", Session: "sessA", Agent: "opencode", Blocked: true,
+				Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+			{Target: "sessB:1.0", Session: "sessB", Agent: "opencode", Blocked: true,
+				Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+		},
+		focus:           panelList,
+		expanded:        map[string]bool{"sessA": true, "sessB": true},
+		manualCollapsed: make(map[string]bool),
+		textInput:       ti,
+		width:           120,
+		height:          40,
+	}
+	m.rebuildGroups()
+
+	// Select pane B
+	for i, item := range m.items {
+		if item.kind == itemPane && m.verdicts[item.paneIdx].Target == "sessB:1.0" {
+			m.cursor = i
+			break
+		}
+	}
+
+	// Simulate scan where pane B disappeared
+	prevKey := m.selectedItemKey()
+	m.verdicts = []model.Verdict{
+		{Target: "sessA:1.0", Session: "sessA", Agent: "opencode", Blocked: true,
+			Actions: []model.Action{{Keys: "1", Label: "option 1"}}},
+	}
+	m.rebuildGroups()
+	m.restoreCursorByKey(prevKey)
+
+	got := m.selectedVerdict()
+	if got == nil {
+		t.Fatal("cursor should point to a valid verdict after pane disappears")
+	}
+	if got.Target != "sessA:1.0" {
+		t.Errorf("expected fallback to sessA:1.0, got %s", got.Target)
+	}
+	// Cursor should not be on a session header
+	if m.items[m.cursor].kind != itemPane {
+		t.Errorf("cursor should land on a pane, not a session header")
+	}
+}
+
+func TestCursorStability_SessionHeaderPreserved(t *testing.T) {
+	// If cursor is on a session header and items shift, it should stay on
+	// the same session header.
+	ti := textinput.New()
+	ti.CharLimit = 2048
+	ti.Width = 80
+
+	m := &tuiModel{
+		verdicts: []model.Verdict{
+			{Target: "alpha:1.0", Session: "alpha", Agent: "opencode", Blocked: true,
+				Actions: []model.Action{{Keys: "1", Label: "opt"}}},
+			{Target: "beta:1.0", Session: "beta", Agent: "opencode", Blocked: true,
+				Actions: []model.Action{{Keys: "1", Label: "opt"}}},
+		},
+		focus:           panelList,
+		expanded:        map[string]bool{"alpha": true, "beta": true},
+		manualCollapsed: make(map[string]bool),
+		textInput:       ti,
+		width:           120,
+		height:          40,
+	}
+	m.rebuildGroups()
+
+	// Select the "beta" session header
+	for i, item := range m.items {
+		if item.kind == itemSession && item.session == "beta" {
+			m.cursor = i
+			break
+		}
+	}
+
+	// Simulate scan that adds a new session before beta alphabetically
+	prevKey := m.selectedItemKey()
+	m.verdicts = []model.Verdict{
+		{Target: "alpha:1.0", Session: "alpha", Agent: "opencode", Blocked: true,
+			Actions: []model.Action{{Keys: "1", Label: "opt"}}},
+		{Target: "alpha:2.0", Session: "alpha", Agent: "opencode", Blocked: true,
+			Actions: []model.Action{{Keys: "1", Label: "opt"}}},
+		{Target: "beta:1.0", Session: "beta", Agent: "opencode", Blocked: true,
+			Actions: []model.Action{{Keys: "1", Label: "opt"}}},
+	}
+	m.rebuildGroups()
+	m.restoreCursorByKey(prevKey)
+
+	if m.items[m.cursor].kind != itemSession || m.items[m.cursor].session != "beta" {
+		t.Errorf("expected cursor on beta session header, got cursor=%d kind=%v session=%s",
+			m.cursor, m.items[m.cursor].kind, m.items[m.cursor].session)
+	}
+}

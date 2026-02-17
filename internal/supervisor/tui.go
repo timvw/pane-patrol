@@ -346,6 +346,55 @@ func (m *tuiModel) selectedVerdict() *model.Verdict {
 	return nil
 }
 
+// selectedItemKey returns a stable identifier for the currently selected item.
+// For pane items: the pane's Target (e.g. "session:window.pane").
+// For session headers: the session name prefixed with "session:" to avoid
+// collisions with pane targets.
+// Returns "" if nothing is selected.
+func (m *tuiModel) selectedItemKey() string {
+	if m.cursor < 0 || m.cursor >= len(m.items) {
+		return ""
+	}
+	item := m.items[m.cursor]
+	if item.kind == itemPane {
+		return m.verdicts[item.paneIdx].Target
+	}
+	return "session:" + item.session
+}
+
+// restoreCursorByKey attempts to find the item matching the given key (from
+// selectedItemKey) in the current items list and moves the cursor there.
+// Falls back to clamping + skipping session headers if the key is not found.
+func (m *tuiModel) restoreCursorByKey(key string) {
+	if key == "" {
+		m.clampCursorToPane()
+		return
+	}
+	for i, item := range m.items {
+		if item.kind == itemPane && m.verdicts[item.paneIdx].Target == key {
+			m.cursor = i
+			return
+		}
+		if item.kind == itemSession && "session:"+item.session == key {
+			m.cursor = i
+			return
+		}
+	}
+	// Key not found (pane disappeared) — clamp and skip headers.
+	m.clampCursorToPane()
+}
+
+// clampCursorToPane clamps cursor to valid range and advances past session
+// headers so the cursor lands on a pane.
+func (m *tuiModel) clampCursorToPane() {
+	if m.cursor >= len(m.items) {
+		m.cursor = 0
+	}
+	for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
+		m.cursor++
+	}
+}
+
 // selectedActionCount returns the number of actions available for the current selection.
 func (m *tuiModel) selectedActionCount() int {
 	v := m.selectedVerdict()
@@ -746,18 +795,16 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.message = fmt.Sprintf("Scan error: %v", msg.err)
 		} else if msg.result != nil {
+			// Preserve cursor position across rebuild: save the selected
+			// item's stable key before replacing verdicts/items.
+			prevKey := m.selectedItemKey()
+
 			m.verdicts = msg.result.Verdicts
 			m.scanCount++
 			m.totalCacheHits += msg.result.CacheHits
 
 			m.rebuildGroups()
-			if m.cursor >= len(m.items) {
-				m.cursor = 0
-			}
-			// Ensure cursor lands on a pane, not a session header
-			for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
-				m.cursor++
-			}
+			m.restoreCursorByKey(prevKey)
 			m.clampActionCursor()
 		}
 		// Schedule next auto-refresh and auto-nudge (both async).
@@ -1099,10 +1146,7 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.message = fmt.Sprintf("Filter: %s", m.filter)
 		m.rebuildGroups()
 		m.cursor = 0
-		// Ensure cursor lands on a pane, not a session header
-		for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
-			m.cursor++
-		}
+		m.clampCursorToPane()
 		m.clampActionCursor()
 		return m, nil
 
