@@ -1,16 +1,11 @@
 # Guidelines for AI Coding Agents
 
-## Architecture: Deterministic parsers + LLM fallback
+## Architecture: Deterministic parser architecture
 
-This project uses a hybrid evaluation approach:
-
-1. **Deterministic parsers** (`internal/parser/`) handle known agents
-   (OpenCode, Claude Code, Codex) by matching exact TUI patterns derived
-   from their source code. This is protocol parsing, not heuristic
-   classification.
-
-2. **LLM fallback** (`internal/evaluator/`) handles unknown agents and
-   non-agent panes.
+This project uses deterministic parsers (`internal/parser/`) to handle known
+agents (OpenCode, Claude Code, Codex) by matching exact TUI patterns derived
+from their source code. This is protocol parsing, not heuristic
+classification. Unknown panes are classified as "not_an_agent".
 
 Acceptable in Go code:
 - Transport (capturing panes, calling APIs, formatting output)
@@ -60,9 +55,9 @@ pre-commit install
 
 ## Testing
 
-- Unit tests mock the `Multiplexer` and `Evaluator` interfaces.
+- Unit tests mock the `Multiplexer` interface.
 - Parser tests use inline terminal content strings.
-- Integration tests require tmux and an LLM API key.
+- Integration tests require tmux.
 - Run `go test ./...` for unit tests.
 
 ## Branch naming
@@ -92,8 +87,6 @@ internal/
     codex.go                         Codex CLI TUI parser
     parser_test.go                   Parser tests
   mux/                               Multiplexer abstraction (tmux, zellij)
-  evaluator/                         LLM evaluation (Anthropic, OpenAI)
-    prompts/                         Externalized prompt templates (embedded)
   model/                             Shared types (Verdict, Pane, Action)
   supervisor/                        Scan loop, TUI, nudge transport
 docs/                                Design documentation
@@ -107,12 +100,6 @@ docs/                                Design documentation
 4. Add tests in `parser_test.go` with realistic terminal content
 5. Document source references (file paths + line numbers) in the doc comment
 6. Run `just test` and `just build`
-
-## Prompts
-
-LLM prompts live in `internal/evaluator/prompts/` as markdown files. They are
-embedded into the binary at compile time via `//go:embed`. They serve as the
-fallback for agents not covered by deterministic parsers.
 
 The `--verbose` flag includes raw pane content in the output, which is useful
 for building a feedback dataset.

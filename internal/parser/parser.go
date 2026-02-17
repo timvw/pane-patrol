@@ -6,7 +6,7 @@
 // these agents render because we read their source code.
 //
 // The Registry tries each registered parser in order. If none matches, the
-// caller falls back to LLM evaluation.
+// pane is reported as unrecognized (no fallback).
 package parser
 
 import (
@@ -16,7 +16,7 @@ import (
 )
 
 // Result is the output of a deterministic parser. It maps directly to the
-// fields in model.Verdict that would normally come from the LLM.
+// fields in model.Verdict.
 type Result struct {
 	Agent       string // e.g., "opencode", "claude_code", "codex"
 	Blocked     bool

@@ -824,7 +824,7 @@ func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int)
 	paneLabel := fmt.Sprintf(":%d.%d", v.Window, v.Pane)
 
 	// Sanitize reason: collapse newlines/tabs to spaces and truncate.
-	// The LLM sometimes returns multi-line reasons or JSON fragments
+	// Parsers may return multi-line reasons or verbose descriptions
 	// which would break the row-based TUI layout.
 	reason := strings.Join(strings.Fields(v.Reason), " ")
 	reason = truncate(reason, reasonWidth-1)
@@ -964,7 +964,7 @@ func jumpToPane(target string) string {
 }
 
 // truncate cuts a string to at most maxLen runes (not bytes), appending "..."
-// when truncation occurs. This is safe for multi-byte UTF-8 strings from LLM output.
+// when truncation occurs. This is safe for multi-byte UTF-8 strings from parser output.
 func truncate(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {

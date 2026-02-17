@@ -1,7 +1,7 @@
 // Package mux provides an abstraction over terminal multiplexers (tmux, zellij).
 //
 // This package is pure transport — it captures observable reality (pane content,
-// session topology, process names) and provides it to parsers and evaluators.
+// session topology, process names) and provides it to parsers.
 package mux
 
 import (
