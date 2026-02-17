@@ -82,42 +82,7 @@ type styles struct {
 	err      lipgloss.Style
 	dim      lipgloss.Style
 	text     lipgloss.Style
-	riskLow  lipgloss.Style
-	riskMed  lipgloss.Style
-	riskHigh lipgloss.Style
 	status   lipgloss.Style
-
-	// Dialog borders
-	warningBorder lipgloss.Style
-	accentBorder  lipgloss.Style
-	errorBorder   lipgloss.Style
-
-	// Tab bar
-	activeTab   lipgloss.Style
-	answeredTab lipgloss.Style
-	pendingTab  lipgloss.Style
-
-	// Confirm tab review
-	reviewLabel      lipgloss.Style
-	reviewValue      lipgloss.Style
-	reviewUnanswered lipgloss.Style
-
-	// Options
-	optionPicked lipgloss.Style
-	optionNumber lipgloss.Style
-	optionActive lipgloss.Style // active number (tinted toward secondary)
-	checkmark    lipgloss.Style
-	optionBg     lipgloss.Style // active option: secondary on backgroundElem
-
-	// Text input
-	inputLabel lipgloss.Style
-
-	// Agent-specific
-	claudeTool   lipgloss.Style
-	claudeDim    lipgloss.Style
-	codexTitle   lipgloss.Style
-	codexCommand lipgloss.Style
-	codexCursor  lipgloss.Style
 
 	// Hints
 	hintKey  lipgloss.Style
@@ -135,36 +100,7 @@ func newStyles(t Theme) styles {
 		err:      lipgloss.NewStyle().Foreground(t.Error),
 		dim:      lipgloss.NewStyle().Foreground(t.TextMuted),
 		text:     lipgloss.NewStyle().Foreground(t.Text),
-		riskLow:  lipgloss.NewStyle().Foreground(t.Success),
-		riskMed:  lipgloss.NewStyle().Foreground(t.Warning),
-		riskHigh: lipgloss.NewStyle().Foreground(t.Error).Bold(true),
 		status:   lipgloss.NewStyle().Foreground(t.TextMuted),
-
-		warningBorder: lipgloss.NewStyle().Foreground(t.Warning),
-		accentBorder:  lipgloss.NewStyle().Foreground(t.Accent),
-		errorBorder:   lipgloss.NewStyle().Foreground(t.Error),
-
-		activeTab:   lipgloss.NewStyle().Bold(true).Foreground(t.Text).Background(t.Accent),
-		answeredTab: lipgloss.NewStyle().Foreground(t.Text),
-		pendingTab:  lipgloss.NewStyle().Foreground(t.TextMuted),
-
-		reviewLabel:      lipgloss.NewStyle().Foreground(t.TextMuted),
-		reviewValue:      lipgloss.NewStyle().Foreground(t.Text),
-		reviewUnanswered: lipgloss.NewStyle().Foreground(t.Error),
-
-		optionPicked: lipgloss.NewStyle().Foreground(t.Success),
-		optionNumber: lipgloss.NewStyle().Foreground(t.TextMuted),
-		optionActive: lipgloss.NewStyle().Foreground(t.ActiveNumber).Background(t.BackgroundElem),
-		checkmark:    lipgloss.NewStyle().Foreground(t.Success),
-		optionBg:     lipgloss.NewStyle().Foreground(t.Secondary).Background(t.BackgroundElem),
-
-		inputLabel: lipgloss.NewStyle().Foreground(t.TextMuted),
-
-		claudeTool:   lipgloss.NewStyle().Foreground(t.Info),
-		claudeDim:    lipgloss.NewStyle().Foreground(t.TextMuted),
-		codexTitle:   lipgloss.NewStyle().Bold(true).Foreground(t.Text),
-		codexCommand: lipgloss.NewStyle().Foreground(t.Success),
-		codexCursor:  lipgloss.NewStyle().Foreground(t.Primary),
 
 		hintKey:  lipgloss.NewStyle().Foreground(t.Text),
 		hintDesc: lipgloss.NewStyle().Foreground(t.TextMuted),
