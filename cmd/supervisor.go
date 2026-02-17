@@ -17,13 +17,14 @@ import (
 )
 
 var flagNoEmbed bool
+var flagTheme string
 
 var supervisorCmd = &cobra.Command{
 	Use:   "supervisor",
 	Short: "Interactive TUI to monitor and unblock AI coding agents",
 	Long: `Launch an interactive terminal UI that continuously scans all panes,
 shows which AI coding agents are blocked, and lets you unblock them
-with LLM-suggested actions or free-form text input.
+with suggested actions or free-form text input.
 
 If not already running inside tmux, the supervisor automatically
 re-launches itself in a new tmux session so that navigation (click,
@@ -40,6 +41,8 @@ See the README for all configuration options.`,
 func init() {
 	supervisorCmd.Flags().BoolVar(&flagNoEmbed, "no-embed", false,
 		"Do not auto-embed in a tmux session (navigation will not work outside tmux)")
+	supervisorCmd.Flags().StringVar(&flagTheme, "theme", "dark",
+		"Color theme: dark, light")
 	rootCmd.AddCommand(supervisorCmd)
 }
 
@@ -55,29 +58,9 @@ func runSupervisor(cmd *cobra.Command) error {
 	defer cancel() // cancels in-flight scan goroutines when the TUI exits
 
 	// Load configuration: defaults -> config file -> env vars.
-	// Also apply any CLI flags that were set on the root command.
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
-	}
-
-	// CLI flags override config file values for shared settings.
-	// Use Cobra's Changed() to detect flags explicitly set by the user,
-	// so that e.g. --provider anthropic correctly overrides a config file value of openai.
-	if cmd.Flags().Changed("provider") {
-		cfg.Provider = flagProvider
-	}
-	if cmd.Flags().Changed("model") {
-		cfg.Model = flagModel
-	}
-	if cmd.Flags().Changed("base-url") {
-		cfg.BaseURL = flagBaseURL
-	}
-	if cmd.Flags().Changed("api-key") {
-		cfg.APIKey = flagAPIKey
-	}
-	if cmd.Flags().Changed("max-tokens") {
-		cfg.MaxTokens = flagMaxTokens
 	}
 
 	if cfg.ConfigFile != "" {
@@ -105,12 +88,6 @@ func runSupervisor(cmd *cobra.Command) error {
 		return fmt.Errorf("no supported terminal multiplexer found: %w", err)
 	}
 
-	// Create evaluator from config (shared factory with check/scan commands)
-	eval, err := newEvaluatorFromConfig(cfg)
-	if err != nil {
-		return err
-	}
-
 	// Generate a session ID to group all scans from this supervisor run
 	sessionID := fmt.Sprintf("ps-%d-%d", os.Getpid(), time.Now().Unix())
 
@@ -134,7 +111,6 @@ func runSupervisor(cmd *cobra.Command) error {
 
 	scanner := &supervisor.Scanner{
 		Mux:             m,
-		Evaluator:       eval,
 		Parsers:         parser.NewRegistry(),
 		Filter:          cfg.Filter,
 		ExcludeSessions: cfg.ExcludeSessions,
@@ -150,6 +126,7 @@ func runSupervisor(cmd *cobra.Command) error {
 		RefreshInterval:  cfg.RefreshDuration,
 		AutoNudge:        cfg.AutoNudge,
 		AutoNudgeMaxRisk: cfg.AutoNudgeMaxRisk,
+		ThemeName:        flagTheme,
 	}
 
 	return tui.Run(ctx)

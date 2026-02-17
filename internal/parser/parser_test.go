@@ -1125,3 +1125,765 @@ func TestClaude_PermissionScrolledOff(t *testing.T) {
 		t.Errorf("WaitingFor should include context above 'Do you want to proceed?', got:\n%s", result.WaitingFor)
 	}
 }
+
+// --- OpenCode Question Dialog Tests ---
+
+func TestOpenCode_QuestionDialogSingleQuestion(t *testing.T) {
+	// OpenCode question tool: single question with numbered options.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	// Real content has ┃ border prefix on every dialog line (SplitBorder component).
+	content := `
+  ┃
+  ┃  Which database should I use?
+  ┃
+  ┃  1. PostgreSQL
+  ┃     Best for complex queries
+  ┃  2. SQLite
+  ┃     Good for embedded use
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result for question dialog")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+	if !strings.Contains(result.WaitingFor, "database") {
+		t.Errorf("WaitingFor should contain question text, got: %q", result.WaitingFor)
+	}
+	// Should have actions for 3 options + dismiss
+	if len(result.Actions) < 4 {
+		t.Errorf("expected at least 4 actions (3 options + dismiss), got %d", len(result.Actions))
+	}
+	// First action should be "1" key
+	if result.Actions[0].Keys != "1" {
+		t.Errorf("first action keys: got %q, want %q", result.Actions[0].Keys, "1")
+	}
+	// Last action should be Escape
+	lastAction := result.Actions[len(result.Actions)-1]
+	if lastAction.Keys != "Escape" {
+		t.Errorf("last action keys: got %q, want %q", lastAction.Keys, "Escape")
+	}
+	// WaitingFor should contain option descriptions (stripped of ┃ prefix)
+	if !strings.Contains(result.WaitingFor, "Best for complex queries") {
+		t.Errorf("WaitingFor should contain description, got: %q", result.WaitingFor)
+	}
+}
+
+func TestOpenCode_QuestionDialogMultiQuestion(t *testing.T) {
+	// Multi-question form with tab-style headers.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  ┃   Database      Config      Confirm
+  ┃
+  ┃  Which database should I use?
+  ┃
+  ┃  1. PostgreSQL
+  ┃  2. SQLite
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter confirm  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result for multi-question dialog")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for multi-question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestOpenCode_QuestionNotOverriddenByIdlePrompt(t *testing.T) {
+	// Question footer "↑↓ select" should prevent idle detection even
+	// when ">" prompt is visible in the bottom lines.
+	content := `
+  ┃  Pick a framework
+  ┃
+  ┃  1. React
+  ┃  2. Vue
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+
+  >
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q — question dialog should override idle prompt",
+			result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestOpenCode_StaleQuestionInScrollback(t *testing.T) {
+	// Stale question dialog text in scrollback, agent now idle at prompt.
+	// The question footer has scrolled above the bottom 8 lines window.
+	content := `
+  ┃  Pick a framework
+  ┃
+  ┃  1. React
+  ┃  2. Vue
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+
+  Selected React. Proceeding with React setup.
+  Installing dependencies...
+  Setup complete. Here's what I did:
+  1. Created package.json
+  2. Installed React and ReactDOM
+  3. Created src/App.jsx
+
+  >
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale question should be ignored",
+			result.Reason, "idle at prompt")
+	}
+}
+
+func TestOpenCode_QuestionDialogMultiSelect(t *testing.T) {
+	// Multi-select question with [✓]/[ ] prefixes.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  ┃  Which features do you need? (select all that apply)
+  ┃
+  ┃  1. [✓] Authentication
+  ┃  2. [ ] Database
+  ┃  3. [ ] API routes
+  ┃  4. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter toggle  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result for multi-select question")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for multi-select question")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+// --- Codex Question Dialog Tests ---
+
+func TestCodex_QuestionDialogSingle(t *testing.T) {
+	// Codex RequestUserInputOverlay: single question with numbered options.
+	// Source: codex-rs/tui/src/bottom_pane/request_user_input/mod.rs
+	content := `
+  What is your preferred testing framework?
+
+  › 1. Jest
+    Popular JavaScript testing framework.
+    2. Vitest
+    Fast Vite-native testing framework.
+    3. None of the above
+    Optionally, add details in notes (tab).
+
+  enter to submit answer | esc to interrupt
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result for Codex question dialog")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+	if !strings.Contains(result.WaitingFor, "testing framework") {
+		t.Errorf("WaitingFor should contain question text, got: %q", result.WaitingFor)
+	}
+}
+
+func TestCodex_QuestionDialogMultiQuestion(t *testing.T) {
+	// Multi-question form with "enter to submit all" footer.
+	content := `
+  Choose a database engine.
+
+  › 1. PostgreSQL
+    Robust relational database.
+    2. SQLite
+    Embedded database.
+
+  enter to submit all | esc to interrupt
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result for multi-question dialog")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestCodex_QuestionNotOverriddenByIdlePrompt(t *testing.T) {
+	// Question footer should prevent idle detection.
+	content := `
+  Pick a tool.
+
+  › 1. Webpack
+    2. Vite
+
+  enter to submit answer | esc to interrupt
+
+  >
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q — question dialog should override idle prompt",
+			result.Reason, "question dialog waiting for answer")
+	}
+}
+
+func TestCodex_StaleQuestionInScrollback(t *testing.T) {
+	// Stale question dialog in scrollback, agent now idle at prompt.
+	content := `
+  What is your preferred testing framework?
+
+  › 1. Jest
+    2. Vitest
+
+  enter to submit answer | esc to interrupt
+
+  Selected Jest. Setting up test configuration.
+  Created jest.config.js
+  Added test scripts to package.json
+  Ready for next task.
+
+  Plan mode  shift+tab to cycle
+
+  >
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q — stale question should be ignored",
+			result.Reason, "idle at prompt")
+	}
+}
+
+func TestCodex_QuestionDialogFreeform(t *testing.T) {
+	// Freeform question with no options (just notes input).
+	// Source: mod.rs — when options is None/empty, focus goes to Notes.
+	content := `
+  What should the project name be?
+
+  enter to submit answer | esc to interrupt
+`
+	p := &CodexParser{}
+	result := p.Parse(content, []string{"codex"})
+	if result == nil {
+		t.Fatal("expected non-nil result for freeform question")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true for freeform question")
+	}
+	if result.Reason != "question dialog waiting for answer" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "question dialog waiting for answer")
+	}
+}
+
+// --- Shared Helper Tests ---
+
+func TestExtractQuestionSummary(t *testing.T) {
+	// Realistic OpenCode content with ┃ border prefix
+	lines := strings.Split(`
+  ┃  Which database should I use?
+  ┃
+  ┃  1. PostgreSQL
+  ┃     Best for complex queries
+  ┃  2. SQLite
+  ┃     Good for embedded use
+  ┃  3. Type your own answer
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if !strings.Contains(summary, "database") {
+		t.Errorf("summary should contain question text, got: %q", summary)
+	}
+	if !strings.Contains(summary, "1. PostgreSQL") {
+		t.Errorf("summary should contain first option, got: %q", summary)
+	}
+	if !strings.Contains(summary, "2. SQLite") {
+		t.Errorf("summary should contain second option, got: %q", summary)
+	}
+	// Description lines should be included (indented under options)
+	if !strings.Contains(summary, "Best for complex queries") {
+		t.Errorf("summary should contain option description, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Good for embedded use") {
+		t.Errorf("summary should contain second option description, got: %q", summary)
+	}
+	// ┃ border should be stripped from output
+	if strings.Contains(summary, "┃") {
+		t.Errorf("summary should not contain ┃ border, got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryCodexStyle(t *testing.T) {
+	// Codex renders options with "› " cursor prefix
+	lines := strings.Split(`
+  What framework do you want?
+
+  › 1. React
+    Build interactive UIs
+    2. Vue
+    Progressive framework
+    3. None of the above
+
+  enter to submit answer  esc to interrupt
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if !strings.Contains(summary, "framework") {
+		t.Errorf("summary should contain question text, got: %q", summary)
+	}
+	if !strings.Contains(summary, "1. React") {
+		t.Errorf("summary should contain first option (with or without ›), got: %q", summary)
+	}
+	if !strings.Contains(summary, "2. Vue") {
+		t.Errorf("summary should contain second option, got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryNoOptions(t *testing.T) {
+	lines := strings.Split(`
+  Some random content
+  No numbered options here
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if summary != "question dialog" {
+		t.Errorf("expected fallback 'question dialog', got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryStopsAtFooter(t *testing.T) {
+	// Descriptions should not cross into footer lines.
+	// Uses ┃ border prefix like real OpenCode content.
+	lines := strings.Split(`
+  ┃  Pick a color
+  ┃
+  ┃  1. Red
+  ┃     Warm color
+  ┃  2. Blue
+  ┃     Cool color
+  ┃  ↑↓ select  enter confirm  esc dismiss
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	// Footer should NOT appear in the summary
+	if strings.Contains(summary, "↑↓ select") {
+		t.Errorf("summary should not contain footer, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Warm color") {
+		t.Errorf("summary should contain description, got: %q", summary)
+	}
+}
+
+func TestExtractQuestionSummaryRealisticMultiSelect(t *testing.T) {
+	// Realistic multi-select question from a live OpenCode session.
+	// Every dialog line has ┃ border prefix + multi-select [ ] checkboxes.
+	lines := strings.Split(`
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Now that superpowers is installed, what would you like to do next? (select all that apply)
+  ┃
+  ┃  1. [ ] Configure wt for multi-repo
+  ┃     Set up the custom pattern on both machines for cross-repo task grouping
+  ┃  2. [ ] Add wt hooks
+  ┃     Configure post_create/post_checkout hooks for automatic dependency installation
+  ┃  3. [ ] Update global AGENTS.md
+  ┃     Align ~/.config/opencode/AGENTS.md to reference superpowers
+  ┃  4. [ ] Test the installation
+  ┃     Verify skills are discoverable and the wt integration works
+  ┃  5. [ ] Something else
+  ┃     I have a different task in mind
+  ┃  6. [ ] Type your own answer
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+  ┃
+`, "\n")
+	summary := extractQuestionSummary(lines)
+	if !strings.Contains(summary, "superpowers") {
+		t.Errorf("summary should contain question text, got: %q", summary)
+	}
+	if !strings.Contains(summary, "1. [ ] Configure wt") {
+		t.Errorf("summary should contain first option, got: %q", summary)
+	}
+	if !strings.Contains(summary, "Set up the custom pattern") {
+		t.Errorf("summary should contain first option description, got: %q", summary)
+	}
+	if !strings.Contains(summary, "4. [ ] Test the installation") {
+		t.Errorf("summary should contain fourth option, got: %q", summary)
+	}
+	// ┃ border should be stripped
+	if strings.Contains(summary, "┃") {
+		t.Errorf("summary should not contain ┃ border, got: %q", summary)
+	}
+	// Footer should not be included
+	if strings.Contains(summary, "⇆ tab") {
+		t.Errorf("summary should not contain footer, got: %q", summary)
+	}
+}
+
+func TestIsFooterLine(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"⇆ select  enter confirm", true},
+		{"↑↓ select  enter confirm  esc dismiss", true},
+		{"⇆ tab  ↑↓ select", true},
+		{"esc dismiss", true},
+		{"enter confirm", true},
+		{"enter to submit answer", true},
+		{"enter to submit all", true},
+		{"esc to interrupt", true},
+		{"tab to add notes", true},
+		{"1. PostgreSQL", false},
+		{"Best for complex queries", false},
+		{"Which database?", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isFooterLine(tt.input)
+			if got != tt.want {
+				t.Errorf("isFooterLine(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripDialogPrefix(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"┃  1. PostgreSQL", "1. PostgreSQL"},
+		{"┃     Description text", "Description text"},
+		{"┃  ↑↓ select  enter confirm", "↑↓ select  enter confirm"},
+		{"› 1. Jest", "1. Jest"},
+		{"›  2. Vitest", "2. Vitest"},
+		{"1. Plain option", "1. Plain option"},
+		{"Just text", "Just text"},
+		{"", ""},
+		{"┃  ┃  double border", "double border"}, // unlikely but handled
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := stripDialogPrefix(tt.input)
+			if got != tt.want {
+				t.Errorf("stripDialogPrefix(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCountNumberedOptions(t *testing.T) {
+	// With ┃ border prefix (realistic OpenCode content)
+	lines := strings.Split(`
+  ┃  1. Option A
+  ┃     Description
+  ┃  2. Option B
+  ┃     Description
+  ┃  3. Type your own answer
+`, "\n")
+	count := countNumberedOptions(lines)
+	if count != 3 {
+		t.Errorf("expected 3 options, got %d", count)
+	}
+
+	// Without border prefix (plain content)
+	plain := strings.Split(`
+  1. Option A
+  2. Option B
+`, "\n")
+	count2 := countNumberedOptions(plain)
+	if count2 != 2 {
+		t.Errorf("expected 2 options for plain content, got %d", count2)
+	}
+}
+
+func TestIsNumberedOption(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"1. PostgreSQL", true},
+		{"2. SQLite", true},
+		{"9. Last option", true},
+		{"1.Created package.json", true}, // edge case: no space after period
+		{"0. Zero", false},               // starts at 1, not 0
+		{"A. Alpha", false},
+		{"", false},
+		{"1", false},
+		{"Just text", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isNumberedOption(tt.input)
+			if got != tt.want {
+				t.Errorf("isNumberedOption(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTabHeaders(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{
+			name: "realistic OpenCode multi-tab",
+			lines: strings.Split(`
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Which features? (select all that apply)
+  ┃
+  ┃  1. [ ] Option A
+  ┃  2. [ ] Option B
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+`, "\n"),
+			want: []string{"Next steps", "Aspire wt config", "Skill overlap", "Confirm"},
+		},
+		{
+			name: "two tabs plus confirm",
+			lines: strings.Split(`
+  ┃   Database   Config   Confirm
+  ┃
+  ┃  Which database?
+`, "\n"),
+			want: []string{"Database", "Config", "Confirm"},
+		},
+		{
+			name: "no tabs single question",
+			lines: strings.Split(`
+  ┃  Which database?
+  ┃
+  ┃  1. PostgreSQL
+  ┃  2. SQLite
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+`, "\n"),
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseTabHeaders(tt.lines)
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("expected %d tabs, got %d: %v", len(tt.want), len(got), got)
+				return
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("tab[%d]: got %q, want %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestSplitTabSegments(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"Next steps   Aspire wt config   Skill overlap   Confirm",
+			[]string{"Next steps", "Aspire wt config", "Skill overlap", "Confirm"}},
+		{"Database   Config   Confirm",
+			[]string{"Database", "Config", "Confirm"}},
+		{"Single tab only", nil}, // only 1 segment
+		{"A   B", []string{"A", "B"}},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitTabSegments(tt.input)
+			if tt.want == nil {
+				if len(got) >= 2 {
+					t.Errorf("expected <2 segments, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("expected %d segments, got %d: %v", len(tt.want), len(got), got)
+				return
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("segment[%d]: got %q, want %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenCode_QuestionDialogMultiTab(t *testing.T) {
+	// Multi-question form with tab headers and ⇆ tab footer.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Now that superpowers is installed, what would you like to do next? (select all that apply)
+  ┃
+  ┃  1. [ ] Configure wt for multi-repo
+  ┃     Set up custom pattern on both machines
+  ┃  2. [ ] Add wt hooks
+  ┃     Configure post_create/post_checkout hooks
+  ┃  3. [ ] Type your own answer
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	if !result.Blocked {
+		t.Error("expected Blocked=true")
+	}
+	// WaitingFor should contain tab header info
+	if !strings.Contains(result.WaitingFor, "[tabs]") {
+		t.Errorf("WaitingFor should contain [tabs], got: %q", result.WaitingFor)
+	}
+	if !strings.Contains(result.WaitingFor, "Next steps") {
+		t.Errorf("WaitingFor should contain tab name, got: %q", result.WaitingFor)
+	}
+	// Should have Tab and BTab actions
+	hasTab := false
+	hasBTab := false
+	for _, a := range result.Actions {
+		if a.Keys == "Tab" {
+			hasTab = true
+		}
+		if a.Keys == "BTab" {
+			hasBTab = true
+		}
+	}
+	if !hasTab {
+		t.Error("expected Tab action for multi-tab navigation")
+	}
+	if !hasBTab {
+		t.Error("expected BTab action for multi-tab navigation")
+	}
+	// Should still have toggle actions
+	if len(result.Actions) < 3 {
+		t.Errorf("expected at least 3 actions (toggles + submit + tab + dismiss), got %d", len(result.Actions))
+	}
+}
+
+func TestOpenCode_ConfirmTab(t *testing.T) {
+	// Confirm tab of a multi-question form: shows "Review" with answer summary,
+	// no numbered options, and "⇆ tab" + "enter submit" footer.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Review
+  ┃
+  ┃  Next steps: Configure wt for multi-repo, Add wt hooks
+  ┃  Aspire wt config: (not answered)
+  ┃  Skill overlap: Authentication
+  ┃
+  ┃  ⇆ tab  enter submit  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	if !result.Blocked {
+		t.Error("expected Blocked=true")
+	}
+	if !strings.Contains(result.Reason, "confirm") {
+		t.Errorf("reason should mention confirm, got: %q", result.Reason)
+	}
+	// WaitingFor should contain tab headers and review content
+	if !strings.Contains(result.WaitingFor, "[confirm tab]") {
+		t.Errorf("WaitingFor should contain [confirm tab], got: %q", result.WaitingFor)
+	}
+	if !strings.Contains(result.WaitingFor, "Configure wt") {
+		t.Errorf("WaitingFor should contain review answers, got: %q", result.WaitingFor)
+	}
+	// Should have Enter (submit), Tab, BTab, Escape actions
+	if len(result.Actions) != 4 {
+		t.Errorf("expected 4 actions (Enter, Tab, BTab, Escape), got %d", len(result.Actions))
+	}
+	if result.Actions[0].Keys != "Enter" || result.Actions[0].Label != "submit all answers" {
+		t.Errorf("first action should be Enter/submit, got: %+v", result.Actions[0])
+	}
+}
+
+func TestOpenCode_SingleQuestionNoTabs(t *testing.T) {
+	// Single question without tabs — no Tab/BTab actions.
+	content := `
+  ┃  Which database?
+  ┃
+  ┃  1. PostgreSQL
+  ┃  2. SQLite
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	for _, a := range result.Actions {
+		if a.Keys == "Tab" || a.Keys == "BTab" {
+			t.Errorf("single question should not have Tab/BTab actions, found: %+v", a)
+		}
+	}
+	if strings.Contains(result.WaitingFor, "[tabs]") {
+		t.Errorf("single question should not have [tabs] in WaitingFor, got: %q", result.WaitingFor)
+	}
+}

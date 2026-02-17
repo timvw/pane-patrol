@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/timvw/pane-patrol/internal/model"
@@ -15,6 +16,15 @@ import (
 // Footer: "⇆ select  enter confirm"
 // Active: Knight Rider scanner (■/⬝ or ⬥◆⬩⬪·), Build/Plan indicators
 // Idle: input prompt visible, no active indicators
+//
+// Source reference: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+// packages/opencode/src/tool/question.ts
+// Question dialog: agent asks user a question with numbered options.
+//   - Single-question: options listed as "1.", "2.", etc. with labels.
+//   - Multi-question: tab-style headers at top (question headers + "Confirm" tab).
+//   - Custom answer: last option is "Type your own answer".
+//   - Multi-select: options prefixed with "[✓]" or "[ ]".
+//   - Footer: "⇆ tab" (multi-question), "↑↓ select", "enter confirm/toggle/submit", "esc dismiss"
 type OpenCodeParser struct{}
 
 func (p *OpenCodeParser) Name() string { return "opencode" }
@@ -46,6 +56,9 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 		return r
 	}
 	if r := p.parseRejectDialog(content); r != nil {
+		return r
+	}
+	if r := p.parseQuestionDialog(content); r != nil {
 		return r
 	}
 
@@ -93,6 +106,14 @@ func (p *OpenCodeParser) isIdleAtBottom(content string) bool {
 		}
 		// Permission dialog footer
 		if strings.Contains(trimmed, "⇆ select") && strings.Contains(trimmed, "enter confirm") {
+			return false
+		}
+		// Question dialog footer: "↑↓ select" is unique to question dialogs
+		// (permission dialogs use "⇆ select" instead).
+		if strings.Contains(trimmed, "↑↓") && strings.Contains(trimmed, "select") {
+			return false
+		}
+		if strings.Contains(trimmed, "esc dismiss") {
 			return false
 		}
 
@@ -153,6 +174,11 @@ func (p *OpenCodeParser) isOpenCode(content string, processTree []string) bool {
 	}
 	// OpenCode footer pattern: "⇆ select  enter confirm"
 	if strings.Contains(content, "⇆ select") {
+		return true
+	}
+	// Question dialog footer: "↑↓ select" + "esc dismiss"
+	if strings.Contains(content, "↑↓") && strings.Contains(content, "select") &&
+		strings.Contains(content, "esc dismiss") {
 		return true
 	}
 	return false
@@ -245,6 +271,210 @@ func (p *OpenCodeParser) isActiveExecution(content string) bool {
 		}
 	}
 	return false
+}
+
+// parseQuestionDialog detects the OpenCode question tool dialog.
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+//
+// The question dialog renders numbered options (1., 2., etc.) with an
+// "↑↓ select" + "esc dismiss" footer. It may also show "Type your own answer"
+// as the last option. Multi-question forms have a tab header row and "⇆ tab"
+// in the footer. The last tab is always "Confirm" which shows a review summary
+// and only "enter submit" + "esc dismiss" (no "↑↓ select").
+//
+// This method detects both regular question tabs (with numbered options) and
+// the Confirm tab (with "Review" text and no options).
+func (p *OpenCodeParser) parseQuestionDialog(content string) *Result {
+	lines := strings.Split(content, "\n")
+	bottom := bottomNonEmpty(lines, bottomLines)
+
+	// Detection: look for question dialog footer indicators in bottom lines.
+	// "↑↓" + "select" is present on regular question tabs.
+	// "⇆ tab" is present on all tabs of multi-question forms (including Confirm).
+	hasQuestionFooter := false
+	hasTabFooter := false
+	for _, line := range bottom {
+		stripped := stripDialogPrefix(strings.TrimSpace(line))
+		if strings.Contains(stripped, "↑↓") && strings.Contains(stripped, "select") {
+			hasQuestionFooter = true
+		}
+		if strings.Contains(stripped, "⇆") && strings.Contains(stripped, "tab") {
+			hasTabFooter = true
+		}
+	}
+
+	// Check for Confirm tab: has ⇆ tab footer but no ↑↓ select, and "Review" text.
+	if hasTabFooter && !hasQuestionFooter {
+		return p.parseConfirmTab(lines, content)
+	}
+
+	if !hasQuestionFooter {
+		return nil
+	}
+
+	// Parse tab headers for multi-question forms.
+	tabHeaders := parseTabHeaders(lines)
+
+	// Extract question text and options for WaitingFor.
+	waitingFor := extractQuestionSummary(lines)
+	// Prefix with tab header info if present.
+	if len(tabHeaders) > 0 {
+		waitingFor = "[tabs] " + strings.Join(tabHeaders, " | ") + "\n" + waitingFor
+	}
+
+	// Build actions. Number keys directly select options in OpenCode's question dialog.
+	// Count visible numbered options in the bottom portion to avoid stale matches.
+	optionCount := countNumberedOptions(lines)
+
+	// Detect multi-select: options have [✓]/[ ] checkbox prefixes.
+	// In multi-select, number keys toggle checkboxes (not select-and-submit),
+	// and Enter submits the selection.
+	isMultiSelect := false
+	for _, line := range lines {
+		stripped := stripDialogPrefix(strings.TrimSpace(line))
+		if isNumberedOption(stripped) && (strings.Contains(stripped, "[ ]") || strings.Contains(stripped, "[✓]")) {
+			isMultiSelect = true
+			break
+		}
+	}
+
+	optionLabels := extractOptionLabels(lines)
+
+	actions := make([]model.Action, 0, optionCount+4)
+	for i := 1; i <= optionCount && i <= 9; i++ {
+		label := fmt.Sprintf("select option %d", i)
+		if isMultiSelect {
+			label = fmt.Sprintf("toggle option %d", i)
+		}
+		if i-1 < len(optionLabels) && optionLabels[i-1] != "" {
+			label = optionLabels[i-1]
+		}
+		actions = append(actions, model.Action{
+			Keys:  fmt.Sprintf("%d", i),
+			Label: label,
+			Risk:  "low",
+			Raw:   true,
+		})
+	}
+	// Multi-select: add explicit Submit action (Enter sends selection).
+	if isMultiSelect {
+		actions = append(actions, model.Action{
+			Keys:  "Enter",
+			Label: "submit selection",
+			Risk:  "low",
+			Raw:   true,
+		})
+	}
+	// Tab navigation actions for multi-question forms.
+	if hasTabFooter {
+		actions = append(actions, model.Action{
+			Keys:  "Tab",
+			Label: "next tab",
+			Risk:  "low",
+			Raw:   true,
+		})
+		actions = append(actions, model.Action{
+			Keys:  "BTab",
+			Label: "prev tab",
+			Risk:  "low",
+			Raw:   true,
+		})
+	}
+	actions = append(actions, model.Action{
+		Keys:  "Escape",
+		Label: "dismiss question",
+		Risk:  "low",
+		Raw:   true,
+	})
+
+	// For multi-select, recommend Submit (after all toggle actions).
+	// For single-select, recommend first option.
+	recommended := 0
+	if isMultiSelect {
+		recommended = optionCount // index of the Submit action
+	}
+
+	return &Result{
+		Agent:       "opencode",
+		Blocked:     true,
+		Reason:      "question dialog waiting for answer",
+		WaitingFor:  waitingFor,
+		Actions:     actions,
+		Recommended: recommended,
+		Reasoning:   "deterministic parser: OpenCode question dialog detected (↑↓ select footer)",
+	}
+}
+
+// parseConfirmTab handles the Confirm tab of a multi-question form.
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+//
+// The Confirm tab shows "Review" followed by a summary of answers for each
+// question. It has no numbered options — only Enter to submit all answers
+// and Escape to dismiss.
+func (p *OpenCodeParser) parseConfirmTab(lines []string, content string) *Result {
+	// Verify this is a Confirm tab by looking for "Review" text.
+	hasReview := false
+	for _, line := range lines {
+		stripped := stripDialogPrefix(trimRightPanel(strings.TrimSpace(line)))
+		if stripped == "Review" {
+			hasReview = true
+			break
+		}
+	}
+	if !hasReview {
+		return nil
+	}
+
+	tabHeaders := parseTabHeaders(lines)
+
+	// Build WaitingFor: include tab headers and review content.
+	var waitParts []string
+	if len(tabHeaders) > 0 {
+		waitParts = append(waitParts, "[tabs] "+strings.Join(tabHeaders, " | "))
+	}
+	waitParts = append(waitParts, "[confirm tab]")
+
+	// Collect review lines (after "Review", before footer).
+	// Apply trimRightPanel before stripDialogPrefix to catch right-panel
+	// junk (paths, git branches) separated by 10+ spaces from the border.
+	inReview := false
+	for _, line := range lines {
+		stripped := stripDialogPrefix(trimRightPanel(strings.TrimSpace(line)))
+		if stripped == "Review" {
+			inReview = true
+			continue
+		}
+		if inReview {
+			if isFooterLine(stripped) || stripped == "" {
+				if isFooterLine(stripped) {
+					break
+				}
+				continue
+			}
+			waitParts = append(waitParts, stripped)
+		}
+	}
+
+	waitingFor := strings.Join(waitParts, "\n")
+
+	actions := []model.Action{
+		{Keys: "Enter", Label: "submit all answers", Risk: "low", Raw: true},
+		{Keys: "Tab", Label: "next tab", Risk: "low", Raw: true},
+		{Keys: "BTab", Label: "prev tab", Risk: "low", Raw: true},
+		{Keys: "Escape", Label: "dismiss question", Risk: "low", Raw: true},
+	}
+
+	return &Result{
+		Agent:       "opencode",
+		Blocked:     true,
+		Reason:      "question dialog confirm tab",
+		WaitingFor:  waitingFor,
+		Actions:     actions,
+		Recommended: 0, // recommend Enter (submit)
+		Reasoning:   "deterministic parser: OpenCode question Confirm tab detected (⇆ tab footer + Review)",
+	}
 }
 
 // extractBlock extracts a contextual block of text around a marker line.

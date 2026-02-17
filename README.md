@@ -8,8 +8,9 @@ pane-patrol monitors terminal multiplexer panes (tmux) and determines if AI
 coding agents are blocked waiting for human input — confirmation dialogs,
 permission prompts, questions, or idle at their input prompt.
 
-It uses a **hybrid evaluation** approach: deterministic parsers for known
-agents (instant, free, no API key needed) with LLM fallback for unknown agents.
+It uses **deterministic parsers** for known agents (OpenCode, Claude Code,
+Codex) — instant, free, no API key needed. Unknown panes are classified as
+"not_an_agent".
 
 ![Supervisor TUI — blocked agents with suggested actions](docs/images/supervisor-blocked.png)
 
@@ -31,32 +32,20 @@ The supervisor solves this with a continuous scan loop (every 5s by default):
      (via `pgrep -P` and `ps`), prepended as a `[Process Info]` header
    - **Check cache** — SHA256 hash of content; if unchanged since last
      scan and within TTL (2m default), reuse the previous verdict
-   - **Tier 1: Deterministic parser** — known agents (OpenCode, Claude Code,
-     Codex) are identified by process tree and TUI markers, then evaluated
-     by exact pattern matching derived from each agent's source code
-   - **Tier 2: LLM fallback** — unrecognized agents are sent to the
-     configured LLM, which returns: agent type, blocked status, reason,
-     suggested actions with risk levels, and reasoning
+   - **Deterministic parser** — known agents (OpenCode, Claude Code,
+      Codex) are identified by process tree and TUI markers, then evaluated
+      by exact pattern matching derived from each agent's source code;
+      unrecognized panes are classified as "not_an_agent"
 4. **Display** results in the interactive TUI
 5. **Wait** for next refresh tick or user action
 
-### Hybrid evaluation
+### Deterministic parsers
 
-pane-patrol uses two evaluation tiers:
-
-- **Tier 1 — Deterministic parsers** (`internal/parser/`) handle known agents
-  by matching exact TUI patterns derived from each agent's source code. This
-  is protocol parsing, not heuristic classification. Parsers produce verdicts
-  with specific unblocking actions (e.g., numeric key `1` for Claude Code
-  permission dialogs, `Enter` for Codex approvals).
-
-- **Tier 2 — LLM fallback** (`internal/evaluator/`) handles unknown agents
-  and non-agent panes. The LLM is instructed to check the bottom of the
-  screen first and treat any active execution signal (spinners, build
-  indicators, streaming output) as NOT blocked.
-
-No API key is required if deterministic parsers handle all your panes.
-The LLM is only called when no parser matches.
+Deterministic parsers (`internal/parser/`) handle known agents by matching
+exact TUI patterns derived from each agent's source code. This is protocol
+parsing, not heuristic classification. Parsers produce verdicts with specific
+unblocking actions (e.g., numeric key `1` for Claude Code permission dialogs,
+`Enter` for Codex approvals). Unknown panes are classified as "not_an_agent".
 
 ### Why the cache works
 
@@ -66,9 +55,9 @@ active vs. blocked distinction:
 
 - **Active agents** have animated spinners (braille characters cycling at
   80ms, Knight Rider blocks at 40ms) that change the captured content
-  between scans → cache miss → fresh LLM evaluation
+  between scans → cache miss → fresh evaluation
 - **Blocked agents** show a static prompt that doesn't change → cache
-  hit → no LLM call needed
+  hit → reuse previous verdict
 - **Non-agent panes** (idle shells, logs) are also static → cache hit
 
 This means frequent scanning is cheap: blocked panes (the ones you
@@ -213,10 +202,7 @@ pane-patrol searches for a config file in this order:
 Example `.pane-patrol.yaml`:
 
 ```yaml
-provider: openai
-model: gpt-4o-mini
-
-# Sessions to exclude from scanning entirely (saves LLM tokens).
+# Sessions to exclude from scanning entirely.
 # Supports exact match and prefix globs with trailing * (e.g. "AIGGTM-*").
 exclude_sessions:
   - langfuse
@@ -226,7 +212,7 @@ exclude_sessions:
 # Auto-refresh interval (set to "0" or "off" to disable)
 refresh: 5s
 
-# Verdict cache TTL — reuse LLM results when pane content hasn't changed.
+# Verdict cache TTL — reuse results when pane content hasn't changed.
 # Set to "0" or "off" to disable caching. Default: 2m.
 cache_ttl: 2m
 
@@ -243,20 +229,12 @@ otel_headers: "Authorization=Basic <base64-encoded-credentials>"
 
 | Variable | Description |
 |----------|-------------|
-| `PANE_PATROL_PROVIDER` | LLM provider: `anthropic` or `openai` |
-| `PANE_PATROL_MODEL` | Model name |
-| `PANE_PATROL_BASE_URL` | Override LLM API endpoint |
-| `PANE_PATROL_API_KEY` | Override LLM API key |
 | `PANE_PATROL_FILTER` | Regex filter on session names (include) |
 | `PANE_PATROL_EXCLUDE_SESSIONS` | Comma-separated session names/globs to exclude (e.g. `AIGGTM-*,private`) |
 | `PANE_PATROL_REFRESH` | Auto-refresh interval (e.g. `30s`, `0` to disable) |
 | `PANE_PATROL_CACHE_TTL` | Verdict cache TTL (e.g. `5m`, `0` to disable) |
 | `PANE_PATROL_AUTO_NUDGE` | Enable auto-nudge (`true` or `1`) |
 | `PANE_PATROL_AUTO_NUDGE_MAX_RISK` | Max risk for auto-nudge: `low`, `medium`, `high` |
-| `ANTHROPIC_API_KEY` | Fallback API key for Anthropic |
-| `OPENAI_API_KEY` | Fallback API key for OpenAI |
-| `AZURE_OPENAI_API_KEY` | Fallback API key for Azure |
-| `AZURE_RESOURCE_NAME` | Azure resource name (auto-builds base URL) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTEL exporter endpoint |
 | `OTEL_EXPORTER_OTLP_HEADERS` | OTEL exporter headers |
 
@@ -281,9 +259,8 @@ pane-patrol capture mysession:0.0
 pane-patrol check mysession:0.0
 ```
 
-Output includes agent classification, blocked status, reason, suggested
-actions with risk levels, and token usage. Known agents are evaluated by
-deterministic parsers; unknown agents fall back to LLM evaluation.
+Output includes agent classification, blocked status, reason, and suggested
+actions with risk levels.
 
 ### Scan all panes
 
@@ -311,30 +288,8 @@ variables. Each scan creates a trace with per-pane spans including:
 
 - Pane target, session, and command
 - Process tree (shell PID + child processes)
-- LLM verdict (agent type, blocked status, reason)
-- Token usage (input/output)
+- Verdict (agent type, blocked status, reason)
 - Cache hit/miss status
-
-## Supported models
-
-pane-patrol works with any model accessible via the Anthropic Messages API or
-OpenAI Chat Completions API.
-
-### Anthropic (provider: `anthropic`)
-
-| Model | Status | Notes |
-|-------|--------|-------|
-| `claude-sonnet-4-5` | Supported (default) | Good balance of speed and accuracy |
-| `claude-opus-4-5` | Supported | Higher quality, slower |
-
-### OpenAI (provider: `openai`)
-
-| Model | Status | Notes |
-|-------|--------|-------|
-| `gpt-4o-mini` | Supported | Fast and cheap |
-| `gpt4o` | Supported | Azure deployment name has no hyphen |
-| `gpt-5` | Supported | Reasoning model |
-| `gpt-5.1` | Supported | Reasoning model |
 
 ## Design
 

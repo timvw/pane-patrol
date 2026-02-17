@@ -103,8 +103,8 @@ func (t *Tmux) run(ctx context.Context, args ...string) (string, error) {
 //
 // Walks up to maxProcessTreeDepth levels deep to capture subprocesses spawned by
 // agents (covers wrapper scripts, version manager shims, and agent binaries).
-// The result is capped at maxProcessTreeEntries to avoid flooding the LLM prompt
-// with LSP servers and other long-running child processes that don't help classification.
+// The result is capped at maxProcessTreeEntries to keep the verdict compact
+// by excluding LSP servers and other long-running child processes that don't help classification.
 // Returns nil on any error — process info is best-effort, never fatal.
 const maxProcessTreeDepth = 5
 const maxProcessTreeEntries = 15

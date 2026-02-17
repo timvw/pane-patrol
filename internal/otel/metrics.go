@@ -13,18 +13,12 @@ const meterName = "pane-supervisor"
 // Metrics holds all OTEL metric instruments for pane-supervisor.
 // All counters are cumulative (monotonic) and safe for concurrent use.
 type Metrics struct {
-	// LLM token counters (partitioned by provider + model via attributes)
-	InputTokens         metric.Int64Counter
-	OutputTokens        metric.Int64Counter
-	CacheReadTokens     metric.Int64Counter
-	CacheCreationTokens metric.Int64Counter
-
 	// Verdict cache counters
 	VerdictCacheHits          metric.Int64Counter
 	VerdictCacheMisses        metric.Int64Counter
 	VerdictCacheInvalidations metric.Int64Counter
 
-	// Evaluation counters (partitioned by source: parser, llm, cache, error)
+	// Evaluation counters (partitioned by source: parser, cache, error)
 	Evaluations metric.Int64Counter
 }
 
@@ -34,36 +28,6 @@ func NewMetrics() (*Metrics, error) {
 	meter := otel.Meter(meterName)
 	m := &Metrics{}
 	var err error
-
-	// --- LLM token counters ---
-
-	m.InputTokens, err = meter.Int64Counter("llm.tokens.input",
-		metric.WithDescription("Total LLM input tokens consumed"),
-		metric.WithUnit("{token}"))
-	if err != nil {
-		return nil, err
-	}
-
-	m.OutputTokens, err = meter.Int64Counter("llm.tokens.output",
-		metric.WithDescription("Total LLM output tokens consumed"),
-		metric.WithUnit("{token}"))
-	if err != nil {
-		return nil, err
-	}
-
-	m.CacheReadTokens, err = meter.Int64Counter("llm.tokens.cache_read",
-		metric.WithDescription("Total input tokens served from provider prompt cache"),
-		metric.WithUnit("{token}"))
-	if err != nil {
-		return nil, err
-	}
-
-	m.CacheCreationTokens, err = meter.Int64Counter("llm.tokens.cache_creation",
-		metric.WithDescription("Total input tokens used to create provider prompt cache entries"),
-		metric.WithUnit("{token}"))
-	if err != nil {
-		return nil, err
-	}
 
 	// --- Verdict cache counters ---
 
@@ -88,31 +52,12 @@ func NewMetrics() (*Metrics, error) {
 	// --- Evaluation counters ---
 
 	m.Evaluations, err = meter.Int64Counter("evaluations.total",
-		metric.WithDescription("Total pane evaluations partitioned by source (parser, llm, cache, error)"))
+		metric.WithDescription("Total pane evaluations partitioned by source (parser, cache, error)"))
 	if err != nil {
 		return nil, err
 	}
 
 	return m, nil
-}
-
-// RecordTokens records LLM token usage on the metric counters.
-func (m *Metrics) RecordTokens(ctx context.Context, provider, model string, input, output, cacheRead, cacheCreation int64) {
-	if m == nil {
-		return
-	}
-	attrs := metric.WithAttributes(
-		attribute.String("llm.provider", provider),
-		attribute.String("llm.model", model),
-	)
-	m.InputTokens.Add(ctx, input, attrs)
-	m.OutputTokens.Add(ctx, output, attrs)
-	if cacheRead > 0 {
-		m.CacheReadTokens.Add(ctx, cacheRead, attrs)
-	}
-	if cacheCreation > 0 {
-		m.CacheCreationTokens.Add(ctx, cacheCreation, attrs)
-	}
 }
 
 // RecordCacheHit records a verdict cache hit.

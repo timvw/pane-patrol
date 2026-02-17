@@ -8,34 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/timvw/pane-patrol/internal/model"
 )
 
-// Styles
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
-	blockedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
-	activeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	riskLowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	riskMedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	riskHighStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	statusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-)
-
-// view mode
-type viewMode int
-
-const (
-	modeVerdictList viewMode = iota
-	modeTextInput
-)
+// Styles are stored in tuiModel.s (built from the configurable Theme).
+// See theme.go for Theme struct and DarkTheme()/LightTheme() constructors.
 
 // displayFilter controls which panes are visible in the TUI.
 type displayFilter int
@@ -62,14 +40,6 @@ func (f displayFilter) String() string {
 func (f displayFilter) next() displayFilter {
 	return (f + 1) % 3
 }
-
-// focusPanel tracks which panel has keyboard focus.
-type focusPanel int
-
-const (
-	panelList    focusPanel = iota // left: session/pane list
-	panelActions                   // right: action buttons
-)
 
 // listItem represents a row in the grouped verdict list.
 // It is either a session header or an individual pane.
@@ -113,35 +83,31 @@ type TUI struct {
 	RefreshInterval  time.Duration // 0 disables auto-refresh
 	AutoNudge        bool          // Enable automatic nudging of blocked panes
 	AutoNudgeMaxRisk string        // Maximum risk level to auto-nudge: "low", "medium", "high"
+	ThemeName        string        // "dark" (default) or "light"
 }
 
 // model implements tea.Model
 type tuiModel struct {
+	theme Theme
+	s     styles // derived from theme
+
 	scanner         *Scanner
 	ctx             context.Context
 	refreshInterval time.Duration
 	verdicts        []model.Verdict
 	cursor          int
-	mode            viewMode
-	focus           focusPanel
 
 	// display filter
 	filter displayFilter
 
 	// grouped list
-	groups   []sessionGroup
-	expanded map[string]bool // session name -> expanded
-	items    []listItem      // visible items (rebuilt on verdicts/expand change)
-
-	// action panel state
-	actionCursor int // selected action index (0-based) in the right panel
-
-	// text input state
-	textInput  textinput.Model
-	textTarget *model.Verdict // pane to send typed text to
+	groups          []sessionGroup
+	expanded        map[string]bool // session name -> expanded
+	manualCollapsed map[string]bool // sessions the user explicitly collapsed (immune to auto-expand)
+	items           []listItem      // visible items (rebuilt on verdicts/expand change)
 
 	// layout (computed in viewVerdictList, used for mouse hit testing)
-	actionPanelX int // X offset where the action panel starts
+	listStart int // scroll offset for list (for mouse hit testing)
 
 	// dimensions
 	width  int
@@ -156,19 +122,13 @@ type tuiModel struct {
 	autoNudge        bool   // whether auto-nudge is enabled (toggleable at runtime)
 	autoNudgeMaxRisk string // maximum risk: "low", "medium", "high"
 
-	// cumulative token usage (incremented after each scan)
-	totalInputTokens         int64
-	totalOutputTokens        int64
-	totalCacheReadTokens     int64
-	totalCacheCreationTokens int64
-	totalCacheHits           int
+	// cumulative stats
+	totalCacheHits int
 }
 
 func (t *TUI) Run(ctx context.Context) error {
-	ti := textinput.New()
-	ti.Placeholder = "Type response and press Enter..."
-	ti.CharLimit = 2048
-	ti.Width = 80
+	theme := ThemeByName(t.ThemeName)
+	s := newStyles(theme)
 
 	maxRisk := t.AutoNudgeMaxRisk
 	if maxRisk == "" {
@@ -176,11 +136,13 @@ func (t *TUI) Run(ctx context.Context) error {
 	}
 
 	m := &tuiModel{
+		theme:            theme,
+		s:                s,
 		scanner:          t.Scanner,
 		ctx:              ctx,
 		refreshInterval:  t.RefreshInterval,
 		expanded:         make(map[string]bool),
-		textInput:        ti,
+		manualCollapsed:  make(map[string]bool),
 		autoNudge:        t.AutoNudge,
 		autoNudgeMaxRisk: maxRisk,
 	}
@@ -261,8 +223,12 @@ func (m *tuiModel) rebuildGroups() {
 	// Auto-expand sessions that have blocked panes (the ones that need
 	// attention), and single-pane sessions (no benefit to collapsing).
 	// Sessions with only active/non-blocked panes stay collapsed.
-	// Users can still manually collapse/expand with Enter or left/right.
+	// Respect manual collapses: if the user explicitly collapsed a session,
+	// don't auto-expand it until the user re-expands it manually.
 	for _, g := range m.groups {
+		if m.manualCollapsed[g.name] {
+			continue
+		}
 		if len(g.verdicts) == 1 || g.blocked > 0 {
 			m.expanded[g.name] = true
 		}
@@ -313,58 +279,53 @@ func (m *tuiModel) selectedVerdict() *model.Verdict {
 	return nil
 }
 
-// selectedActionCount returns the number of actions available for the current selection.
-func (m *tuiModel) selectedActionCount() int {
-	v := m.selectedVerdict()
-	if v == nil || !v.Blocked {
-		return 0
+// selectedItemKey returns a stable identifier for the currently selected item.
+// For pane items: the pane's Target (e.g. "session:window.pane").
+// For session headers: the session name prefixed with "session:" to avoid
+// collisions with pane targets.
+// Returns "" if nothing is selected.
+func (m *tuiModel) selectedItemKey() string {
+	if m.cursor < 0 || m.cursor >= len(m.items) {
+		return ""
 	}
-	n := len(v.Actions)
-	if n > 9 {
-		n = 9
+	item := m.items[m.cursor]
+	if item.kind == itemPane {
+		return m.verdicts[item.paneIdx].Target
 	}
-	return n
+	return "session:" + item.session
 }
 
-// clampActionCursor ensures actionCursor is within [0, count).
-func (m *tuiModel) clampActionCursor() {
-	count := m.selectedActionCount()
-	if count == 0 {
-		m.actionCursor = 0
+// restoreCursorByKey attempts to find the item matching the given key (from
+// selectedItemKey) in the current items list and moves the cursor there.
+// Falls back to clamping + skipping session headers if the key is not found.
+func (m *tuiModel) restoreCursorByKey(key string) {
+	if key == "" {
+		m.clampCursorToPane()
 		return
 	}
-	if m.actionCursor >= count {
-		m.actionCursor = count - 1
+	for i, item := range m.items {
+		if item.kind == itemPane && m.verdicts[item.paneIdx].Target == key {
+			m.cursor = i
+			return
+		}
+		if item.kind == itemSession && "session:"+item.session == key {
+			m.cursor = i
+			return
+		}
 	}
-	if m.actionCursor < 0 {
-		m.actionCursor = 0
-	}
+	// Key not found (pane disappeared) — clamp and skip headers.
+	m.clampCursorToPane()
 }
 
-// executeSelectedAction sends the currently highlighted action to the target pane
-// and triggers a rescan. Does NOT auto-jump to the target pane — the user stays
-// in the supervisor TUI and can see the status message. Manual navigation via
-// Enter/click is still available.
-func (m *tuiModel) executeSelectedAction() tea.Cmd {
-	v := m.selectedVerdict()
-	if v == nil || !v.Blocked || m.actionCursor >= len(v.Actions) {
-		return nil
+// clampCursorToPane clamps cursor to valid range and advances past session
+// headers so the cursor lands on a pane.
+func (m *tuiModel) clampCursorToPane() {
+	if m.cursor >= len(m.items) {
+		m.cursor = 0
 	}
-	action := v.Actions[m.actionCursor]
-	err := NudgePane(v.Target, action.Keys, action.Raw)
-	if err != nil {
-		m.message = fmt.Sprintf("Nudge failed: %v", err)
-	} else {
-		m.message = fmt.Sprintf("Sent '%s' to %s (%s)", action.Keys, v.Target, action.Label)
+	for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
+		m.cursor++
 	}
-	// Invalidate cache so the next scan re-evaluates this pane
-	if m.scanner.Cache != nil {
-		m.scanner.Cache.Invalidate(v.Target)
-		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
-	}
-	m.focus = panelList
-	m.scanning = true
-	return m.doScan()
 }
 
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -385,36 +346,24 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.message = fmt.Sprintf("Scan error: %v", msg.err)
 		} else if msg.result != nil {
+			// Preserve cursor position across rebuild: save the selected
+			// item's stable key before replacing verdicts/items.
+			prevKey := m.selectedItemKey()
+
 			m.verdicts = msg.result.Verdicts
 			m.scanCount++
 			m.totalCacheHits += msg.result.CacheHits
-			// Accumulate token usage from this scan
-			for _, v := range msg.result.Verdicts {
-				m.totalInputTokens += v.Usage.InputTokens
-				m.totalOutputTokens += v.Usage.OutputTokens
-				m.totalCacheReadTokens += v.Usage.CacheReadInputTokens
-				m.totalCacheCreationTokens += v.Usage.CacheCreationInputTokens
-			}
 
 			m.rebuildGroups()
-			if m.cursor >= len(m.items) {
-				m.cursor = 0
-			}
-			// Ensure cursor lands on a pane, not a session header
-			for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
-				m.cursor++
-			}
-			m.clampActionCursor()
+			m.restoreCursorByKey(prevKey)
 		}
 		// Schedule next auto-refresh and auto-nudge (both async).
 		var cmds []tea.Cmd
 		if cmd := m.scheduleTick(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		if m.focus != panelActions && m.mode != modeTextInput {
-			if cmd := m.autoNudgeCmd(); cmd != nil {
-				cmds = append(cmds, cmd)
-			}
+		if cmd := m.autoNudgeCmd(); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 		return m, tea.Batch(cmds...)
 
@@ -425,8 +374,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		// Auto-refresh: skip if already scanning, focused on actions, or typing
-		if m.scanning || m.mode == modeTextInput || m.focus == panelActions {
+		if m.scanning {
 			return m, m.scheduleTick()
 		}
 		m.scanning = true
@@ -437,39 +385,30 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch m.mode {
-	case modeVerdictList:
-		if m.focus == panelActions {
-			return m.handleActionPanelKey(msg)
-		}
-		return m.handleVerdictListKey(msg)
-	case modeTextInput:
-		return m.handleTextInputKey(msg)
-	}
-	return m, nil
+	return m.handleVerdictListKey(msg)
 }
 
 func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	if m.mode != modeVerdictList {
+	// Hover: move cursor to hovered item.
+	if msg.Action == tea.MouseActionMotion {
+		idx := msg.Y - 1 + m.listStart
+		if idx >= 0 && idx < len(m.items) {
+			m.cursor = idx
+		}
 		return m, nil
 	}
+
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return m, nil
 	}
 
-	// Determine if click is in the action panel (third column)
-	if m.actionPanelX > 0 && msg.X >= m.actionPanelX {
-		return m.handleActionPanelClick(msg)
-	}
-
-	// Click in the left panel: header line is row 0, items start at row 1
-	clickedIdx := msg.Y - 1 // offset for header line
+	// Click in the list panel: header line is row 0, items start at row 1
+	clickedIdx := msg.Y - 1 + m.listStart // offset for header line + scroll
 	if clickedIdx < 0 || clickedIdx >= len(m.items) {
 		return m, nil
 	}
 
 	m.cursor = clickedIdx
-	m.focus = panelList
 	item := m.items[clickedIdx]
 	if item.kind == itemPane {
 		// Navigate tmux to this pane
@@ -479,50 +418,17 @@ func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	} else {
 		// Session header: toggle expand/collapse
 		m.expanded[item.session] = !m.expanded[item.session]
+		if m.expanded[item.session] {
+			delete(m.manualCollapsed, item.session)
+		} else {
+			m.manualCollapsed[item.session] = true
+		}
 		m.rebuildItems()
 		if m.expanded[item.session] && m.cursor+1 < len(m.items) {
 			m.cursor++
 		}
 	}
-	m.clampActionCursor()
 	return m, nil
-}
-
-// handleActionPanelClick handles mouse clicks in the action panel (third column).
-func (m *tuiModel) handleActionPanelClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	v := m.selectedVerdict()
-	if v == nil || !v.Blocked || len(v.Actions) == 0 {
-		return m, nil
-	}
-
-	// Action panel layout: row 1 = header line (Y=1 in terminal)
-	// The action lines start after: target line + reason lines + blank separator
-	// We compute the action line offset from the panel layout.
-	reasonLines := len(wrapText(v.Reason, m.width*40/100))
-	if reasonLines == 0 {
-		reasonLines = 1
-	}
-	// Action panel rows (relative to first row in the panel area):
-	// row 0: target header
-	// rows 1..reasonLines: reason text
-	// row reasonLines+1: blank separator (but only first blank)
-	// rows reasonLines+2..: action lines (but row in panel = row in terminal - 1)
-	actionStartRow := 1 + reasonLines + 1 // target + reason + blank
-
-	// The panel starts at terminal row 1 (after the header line)
-	clickedPanelRow := msg.Y - 1 // terminal row 1 = panel row 0
-	actionIdx := clickedPanelRow - actionStartRow
-	if actionIdx < 0 || actionIdx >= len(v.Actions) || actionIdx >= 9 {
-		// Click wasn't on an action line — just move focus to action panel
-		m.focus = panelActions
-		m.clampActionCursor()
-		return m, nil
-	}
-
-	// Execute the clicked action directly
-	m.actionCursor = actionIdx
-	m.focus = panelActions
-	return m, m.executeSelectedAction()
 }
 
 func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -537,8 +443,6 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			for m.cursor > 0 && m.items[m.cursor].kind == itemSession {
 				m.cursor--
 			}
-			m.actionCursor = 0
-			m.clampActionCursor()
 		}
 
 	case "down", "j":
@@ -548,8 +452,6 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
 				m.cursor++
 			}
-			m.actionCursor = 0
-			m.clampActionCursor()
 		}
 
 	case "enter":
@@ -560,39 +462,40 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if item.kind == itemSession {
 			// Toggle expand/collapse
 			m.expanded[item.session] = !m.expanded[item.session]
+			if m.expanded[item.session] {
+				delete(m.manualCollapsed, item.session)
+			} else {
+				m.manualCollapsed[item.session] = true
+			}
 			m.rebuildItems()
 			if m.expanded[item.session] && m.cursor+1 < len(m.items) {
 				m.cursor++
 			}
 			return m, nil
 		}
-		// Pane item: navigate tmux to this pane
+		// Pane item: switch tmux client to this pane
 		if errMsg := jumpToPane(m.verdicts[item.paneIdx].Target); errMsg != "" {
 			m.message = errMsg
 		}
 		return m, nil
 
-	case "right", "l", "tab":
-		// Move focus to action panel if there are actions
-		if m.selectedActionCount() > 0 {
-			m.focus = panelActions
-			v := m.selectedVerdict()
-			if v != nil {
-				m.actionCursor = v.Recommended
-			}
-			m.clampActionCursor()
-		} else if m.cursor >= 0 && m.cursor < len(m.items) {
-			// No actions: Enter/right on session expands
-			item := m.items[m.cursor]
-			if item.kind == itemSession {
-				m.expanded[item.session] = !m.expanded[item.session]
-				m.rebuildItems()
-				if m.expanded[item.session] && m.cursor+1 < len(m.items) {
-					m.cursor++
-				}
-			}
+	case "right", "l":
+		if m.cursor < 0 || m.cursor >= len(m.items) {
+			return m, nil
 		}
-		return m, nil
+		item := m.items[m.cursor]
+		if item.kind == itemSession {
+			// Expand session and move to first pane
+			if !m.expanded[item.session] {
+				m.expanded[item.session] = true
+				delete(m.manualCollapsed, item.session)
+				m.rebuildItems()
+			}
+			if m.cursor+1 < len(m.items) {
+				m.cursor++
+			}
+			return m, nil
+		}
 
 	case "left", "h":
 		// Collapse: if on a pane, jump to its session header
@@ -614,39 +517,13 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// On session header: collapse
 		if m.expanded[item.session] {
 			m.expanded[item.session] = false
+			m.manualCollapsed[item.session] = true
 			m.rebuildItems()
 			if m.cursor >= len(m.items) {
 				m.cursor = len(m.items) - 1
 			}
 			return m, nil
 		}
-
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		// Quick-execute the Nth action for the currently selected pane
-		v := m.selectedVerdict()
-		if v == nil || !v.Blocked {
-			return m, nil
-		}
-		idx := int(msg.String()[0] - '1') // 0-based
-		if idx >= len(v.Actions) {
-			return m, nil
-		}
-		m.actionCursor = idx
-		return m, m.executeSelectedAction()
-
-	case "t":
-		// Open text input to type a response to the selected pane
-		if m.cursor >= 0 && m.cursor < len(m.items) {
-			v := m.selectedVerdict()
-			if v != nil {
-				m.mode = modeTextInput
-				m.textTarget = v
-				m.textInput.SetValue("")
-				m.textInput.Focus()
-				return m, textinput.Blink
-			}
-		}
-		return m, nil
 
 	case "a":
 		// Toggle auto-nudge
@@ -664,11 +541,7 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.message = fmt.Sprintf("Filter: %s", m.filter)
 		m.rebuildGroups()
 		m.cursor = 0
-		// Ensure cursor lands on a pane, not a session header
-		for m.cursor < len(m.items)-1 && m.items[m.cursor].kind == itemSession {
-			m.cursor++
-		}
-		m.clampActionCursor()
+		m.clampCursorToPane()
 		return m, nil
 
 	case "r":
@@ -681,153 +554,33 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleActionPanelKey handles keyboard input when the action panel has focus.
-func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q", "ctrl+c":
-		return m, tea.Quit
-
-	case "esc", "escape", "left", "h":
-		// Return focus to the list panel
-		m.focus = panelList
-		return m, nil
-
-	case "up", "k":
-		if m.actionCursor > 0 {
-			m.actionCursor--
-		}
-
-	case "down", "j":
-		count := m.selectedActionCount()
-		if m.actionCursor < count-1 {
-			m.actionCursor++
-		}
-
-	case "enter":
-		return m, m.executeSelectedAction()
-
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		v := m.selectedVerdict()
-		if v == nil || !v.Blocked {
-			return m, nil
-		}
-		idx := int(msg.String()[0] - '1')
-		if idx >= len(v.Actions) {
-			return m, nil
-		}
-		m.actionCursor = idx
-		return m, m.executeSelectedAction()
-
-	case "t":
-		// Open text input from action panel
-		v := m.selectedVerdict()
-		if v != nil {
-			m.mode = modeTextInput
-			m.focus = panelList
-			m.textTarget = v
-			m.textInput.SetValue("")
-			m.textInput.Focus()
-			return m, textinput.Blink
-		}
-		return m, nil
-
-	case "r":
-		m.focus = panelList
-		m.scanning = true
-		m.message = ""
-		return m, m.doScan()
-	}
-
-	return m, nil
-}
-
-func (m *tuiModel) handleTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "escape":
-		m.mode = modeVerdictList
-		m.textTarget = nil
-		m.textInput.Blur()
-		return m, nil
-
-	case "enter":
-		text := m.textInput.Value()
-		if text != "" && m.textTarget != nil {
-			target := m.textTarget.Target
-			err := NudgePane(target, text, false)
-			if err != nil {
-				m.message = fmt.Sprintf("Send failed: %v", err)
-			} else {
-				m.message = fmt.Sprintf("Sent '%s' to %s", truncate(text, 40), target)
-			}
-			// Invalidate cache so the next scan re-evaluates this pane
-			if m.scanner.Cache != nil {
-				m.scanner.Cache.Invalidate(target)
-				m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
-			}
-			// Navigate tmux to the target pane
-			if errMsg := jumpToPane(target); errMsg != "" {
-				m.message = errMsg
-			}
-		}
-		m.mode = modeVerdictList
-		m.textTarget = nil
-		m.textInput.Blur()
-		// Rescan after sending input
-		m.scanning = true
-		return m, m.doScan()
-	}
-
-	// Forward all other keys to the text input component
-	var cmd tea.Cmd
-	m.textInput, cmd = m.textInput.Update(msg)
-	return m, cmd
-}
-
 func (m *tuiModel) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
 
-	switch m.mode {
-	case modeVerdictList:
-		return m.viewVerdictList()
-	case modeTextInput:
-		return m.viewTextInput()
-	}
-	return ""
+	return m.viewVerdictList()
 }
 
 func (m *tuiModel) viewVerdictList() string {
 	var b strings.Builder
 
 	// Header: title + keybindings + token usage
-	b.WriteString(titleStyle.Render("Pane Supervisor"))
+	b.WriteString(m.s.title.Render("Pane Supervisor"))
 	b.WriteString("  ")
-	if m.focus == panelActions {
-		b.WriteString(dimStyle.Render("↑↓=select  Enter/click=execute  t=type  Esc/←=back  q=quit"))
-	} else {
-		autoLabel := "a=auto:OFF"
-		if m.autoNudge {
-			autoLabel = fmt.Sprintf("a=auto:ON(%s)", m.autoNudgeMaxRisk)
-		}
-		filterLabel := fmt.Sprintf("f=%s", m.filter)
-		b.WriteString(dimStyle.Render(fmt.Sprintf("Enter/click=jump  →/Tab=actions  1-9=action  t=type  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
+	autoLabel := "a=auto:OFF"
+	if m.autoNudge {
+		autoLabel = fmt.Sprintf("a=auto:ON(%s)", m.autoNudgeMaxRisk)
 	}
-	if m.totalInputTokens > 0 || m.totalOutputTokens > 0 {
+	filterLabel := fmt.Sprintf("f=%s", m.filter)
+	b.WriteString(m.styleHeaderHints(fmt.Sprintf("↑↓=nav  enter=jump  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
+	if m.totalCacheHits > 0 {
 		b.WriteString("  ")
-		tokenInfo := fmt.Sprintf("tokens: %s in / %s out",
-			formatTokens(m.totalInputTokens), formatTokens(m.totalOutputTokens))
-		if m.totalCacheReadTokens > 0 {
-			tokenInfo += fmt.Sprintf(" | cached: %s", formatTokens(m.totalCacheReadTokens))
-		}
-		if m.totalCacheHits > 0 {
-			tokenInfo += fmt.Sprintf(" | eval cache: %d", m.totalCacheHits)
-		}
-		b.WriteString(dimStyle.Render(tokenInfo))
+		b.WriteString(m.s.dim.Render(fmt.Sprintf("eval cache: %d", m.totalCacheHits)))
 	}
 	if m.scanning {
 		b.WriteString("  ")
-		b.WriteString(blockedStyle.Render("scanning..."))
+		b.WriteString(m.s.blocked.Render("scanning..."))
 	}
 	b.WriteString("\n")
 
@@ -841,7 +594,7 @@ func (m *tuiModel) viewVerdictList() string {
 		return b.String()
 	}
 
-	// Layout widths: name | reason | actions
+	// Layout: 2-column list (name | reason)
 	nameWidth := 10
 	for _, g := range m.groups {
 		if len(g.name)+6 > nameWidth {
@@ -853,20 +606,26 @@ func (m *tuiModel) viewVerdictList() string {
 	separator := " | "
 	sepWidth := len(separator)
 
-	// Actions panel gets 40% of width
-	actionWidth := m.width * 40 / 100
-	if actionWidth < 20 {
-		actionWidth = 20
-	}
-
-	// Reason gets whatever is left
-	reasonWidth := m.width - nameWidth - actionWidth - sepWidth*2
+	// Reason gets all remaining width
+	reasonWidth := m.width - nameWidth - sepWidth
 	if reasonWidth < 15 {
 		reasonWidth = 15
 	}
 
-	// Store the X offset where the action panel starts (for mouse hit testing)
-	m.actionPanelX = nameWidth + sepWidth + reasonWidth + sepWidth
+	// Height budget: header(1) + list + summary(1) + hints(1) + status(0-1)
+	overhead := 3 // header + summary + hints
+	if m.message != "" {
+		overhead++
+	}
+	available := m.height - overhead
+	if available < 6 {
+		available = 6
+	}
+
+	listHeight := len(m.items)
+	if listHeight > available {
+		listHeight = available
+	}
 
 	// Count totals
 	totalBlocked := 0
@@ -876,17 +635,8 @@ func (m *tuiModel) viewVerdictList() string {
 		totalActive += g.active
 	}
 
-	// Available lines for the panels
-	panelHeight := m.height - 3
-	if panelHeight < 3 {
-		panelHeight = 3
-	}
-
 	// Calculate visible window for scrolling
-	maxVisible := panelHeight - 1
-	if maxVisible < 2 {
-		maxVisible = 2
-	}
+	maxVisible := listHeight
 	if maxVisible > len(m.items) {
 		maxVisible = len(m.items)
 	}
@@ -903,12 +653,11 @@ func (m *tuiModel) viewVerdictList() string {
 		end = maxVisible
 	}
 
-	// Build action panel lines for the right column
-	actionLines := m.buildActionPanel(actionWidth)
+	// Store scroll offset for mouse hit testing
+	m.listStart = start
 
-	// Render rows
-	sep := headerStyle.Render(separator)
-	row := 0
+	// Render list rows (2 columns: name | reason)
+	sep := m.s.header.Render(separator)
 	for i := start; i < end && i < len(m.items); i++ {
 		item := m.items[i]
 		var nameCol, reasonCol string
@@ -919,36 +668,10 @@ func (m *tuiModel) viewVerdictList() string {
 			nameCol, reasonCol = m.renderPaneRow(item, i, nameWidth, reasonWidth)
 		}
 
-		// Action column
-		actionCol := ""
-		if row < len(actionLines) {
-			actionCol = actionLines[row]
-		}
-
 		b.WriteString(nameCol)
 		b.WriteString(sep)
 		b.WriteString(reasonCol)
-		b.WriteString(sep)
-		b.WriteString(actionCol)
 		b.WriteString("\n")
-		row++
-	}
-
-	// Fill remaining panel height with action-only rows
-	for row < panelHeight-1 {
-		actionCol := ""
-		if row < len(actionLines) {
-			actionCol = actionLines[row]
-		}
-		if actionCol != "" {
-			b.WriteString(padRight("", nameWidth))
-			b.WriteString(sep)
-			b.WriteString(padRight("", reasonWidth))
-			b.WriteString(sep)
-			b.WriteString(actionCol)
-			b.WriteString("\n")
-		}
-		row++
 	}
 
 	// Summary line
@@ -961,94 +684,78 @@ func (m *tuiModel) viewVerdictList() string {
 	if start > 0 || end < len(m.items) {
 		summary += fmt.Sprintf(" | showing %d-%d", start+1, end)
 	}
-	b.WriteString(dimStyle.Render(summary))
+	b.WriteString(m.s.dim.Render(summary))
+	b.WriteString("\n")
+
+	// Navigation hints
+	b.WriteString(m.buildHints())
 	b.WriteString("\n")
 
 	// Status message
 	if m.message != "" {
-		b.WriteString(statusStyle.Render("  " + m.message))
+		b.WriteString(m.s.status.Render("  " + m.message))
 		b.WriteString("\n")
 	}
 
 	return b.String()
 }
 
-// buildActionPanel builds the lines for the right-hand action panel showing
-// the question and available actions for the currently selected pane.
-// When the action panel has focus, the selected action is highlighted.
-func (m *tuiModel) buildActionPanel(width int) []string {
-	v := m.selectedVerdict()
-	if v == nil {
-		return nil
-	}
+// buildHints returns a context-dependent keybinding hint line.
+func (m *tuiModel) buildHints() string {
+	return m.styleHints("  ↑↓ navigate  enter jump  →/l expand  ←/h collapse  r rescan  f filter  a auto-nudge  q quit")
+}
 
-	var lines []string
-
-	// Target header
-	lines = append(lines, dimStyle.Render(truncate(v.Target, width)))
-
-	if !v.Blocked {
-		lines = append(lines, activeStyle.Render("Active"))
-		if v.Reason != "" {
-			for _, rl := range wrapText(v.Reason, width) {
-				lines = append(lines, dimStyle.Render(rl))
-			}
+// styleHints renders a hint string with key symbols in text color and
+// descriptions in muted color. Hint format: "  key desc  key desc  ..."
+// Each pair is separated by double spaces; the key is the first word, desc is the second.
+func (m *tuiModel) styleHints(raw string) string {
+	// Split on double-space to get "key desc" pairs (first entry is empty from leading spaces)
+	pairs := strings.Split(raw, "  ")
+	var b strings.Builder
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			b.WriteString("  ")
+			continue
 		}
-		return lines
-	}
-
-	// Blocked: show the dialog the agent is waiting on, then the reason
-	if v.WaitingFor != "" {
-		for _, wl := range strings.Split(v.WaitingFor, "\n") {
-			for _, rl := range wrapText(wl, width) {
-				lines = append(lines, blockedStyle.Render(rl))
-			}
-		}
-	} else if v.Reason != "" {
-		for _, rl := range wrapText(v.Reason, width) {
-			lines = append(lines, blockedStyle.Render(rl))
+		// Split into key and description
+		parts := strings.SplitN(pair, " ", 2)
+		b.WriteString("  ")
+		b.WriteString(m.s.hintKey.Render(parts[0]))
+		if len(parts) > 1 {
+			b.WriteString(" ")
+			b.WriteString(m.s.hintDesc.Render(parts[1]))
 		}
 	}
-	// Show the one-line reason below the dialog as context
-	if v.WaitingFor != "" && v.Reason != "" {
-		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
-	}
-	lines = append(lines, "") // blank separator
+	return b.String()
+}
 
-	// Actions with number keys — highlight selected when panel is focused
-	focused := m.focus == panelActions
-	for i, a := range v.Actions {
-		if i >= 9 {
-			break
+// styleHeaderHints renders header hints with key=value format.
+// Keys (before =) are in text color, values (after =) in muted.
+// Pairs are separated by double spaces.
+func (m *tuiModel) styleHeaderHints(raw string) string {
+	pairs := strings.Split(raw, "  ")
+	var b strings.Builder
+	for i, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
 		}
-
-		rec := " "
-		if i == v.Recommended {
-			rec = "*"
+		if i > 0 {
+			b.WriteString("  ")
 		}
-
-		riskStr := riskLabel(a.Risk)
-		label := fmt.Sprintf(" %s[%d] '%s' %s (%s)", rec, i+1, a.Keys, a.Label, riskStr)
-		label = truncate(label, width)
-
-		if focused && i == m.actionCursor {
-			lines = append(lines, selectedStyle.Render(padRight("→"+label[1:], width)))
+		if eqIdx := strings.Index(pair, "="); eqIdx >= 0 {
+			b.WriteString(m.s.hintKey.Render(pair[:eqIdx]))
+			b.WriteString(m.s.hintDesc.Render("=" + pair[eqIdx+1:]))
 		} else {
-			lines = append(lines, label)
+			b.WriteString(m.s.hintDesc.Render(pair))
 		}
 	}
-
-	// Show hint for custom text input when focused
-	if focused {
-		lines = append(lines, "")
-		lines = append(lines, dimStyle.Render("  t = type custom response"))
-	}
-
-	return lines
+	return b.String()
 }
 
 func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth int) (string, string) {
-	// Find the group for this session
+	// Find the session group for aggregate info
 	var group *sessionGroup
 	for gi := range m.groups {
 		if m.groups[gi].name == item.session {
@@ -1058,12 +765,12 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 	}
 
 	// Session icon: worst status across panes
-	icon := dimStyle.Render("·")
+	icon := m.s.dim.Render("·")
 	if group != nil {
 		if group.blocked > 0 {
-			icon = blockedStyle.Render("⚠")
+			icon = m.s.blocked.Render("⚠")
 		} else if group.active > 0 {
-			icon = activeStyle.Render("✓")
+			icon = m.s.active.Render("✓")
 		}
 	}
 
@@ -1088,12 +795,12 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 
 	var nameCol, reasonCol string
 	if idx == m.cursor {
-		nameCol = selectedStyle.Render(padRight(
-			fmt.Sprintf("→ %s %s %s", arrow, sessionIcon(group), item.session), nameWidth))
-		reasonCol = selectedStyle.Render(padRight(reason, reasonWidth))
+		nameCol = m.s.selected.Render(padRight(
+			fmt.Sprintf("  %s %s %s", arrow, sessionIcon(group), item.session), nameWidth))
+		reasonCol = m.s.selected.Render(padRight(reason, reasonWidth))
 	} else {
 		nameCol = padRight(fmt.Sprintf("  %s %s %s", arrow, icon, item.session), nameWidth)
-		reasonCol = dimStyle.Render(padRight(reason, reasonWidth))
+		reasonCol = m.s.dim.Render(padRight(reason, reasonWidth))
 	}
 
 	return nameCol, reasonCol
@@ -1102,59 +809,37 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int) (string, string) {
 	v := m.verdicts[item.paneIdx]
 
-	icon := activeStyle.Render("✓")
+	icon := m.s.active.Render("✓")
 	if v.Blocked {
-		icon = blockedStyle.Render("⚠")
+		icon = m.s.blocked.Render("⚠")
 	}
 	if v.Agent == "error" {
-		icon = errorStyle.Render("✗")
+		icon = m.s.err.Render("✗")
 	}
 	if v.Agent == "not_an_agent" {
-		icon = dimStyle.Render("·")
+		icon = m.s.dim.Render("·")
 	}
 
 	// Show pane target (e.g. ":0.1") indented under the session
 	paneLabel := fmt.Sprintf(":%d.%d", v.Window, v.Pane)
 
 	// Sanitize reason: collapse newlines/tabs to spaces and truncate.
-	// The LLM sometimes returns multi-line reasons or JSON fragments
+	// Parsers may return multi-line reasons or verbose descriptions
 	// which would break the row-based TUI layout.
 	reason := strings.Join(strings.Fields(v.Reason), " ")
 	reason = truncate(reason, reasonWidth-1)
 
 	var nameCol, reasonCol string
 	if idx == m.cursor {
-		nameCol = selectedStyle.Render(padRight(
-			fmt.Sprintf("→     %s %s", iconText(v), paneLabel), nameWidth))
-		reasonCol = selectedStyle.Render(padRight(reason, reasonWidth))
+		nameCol = m.s.selected.Render(padRight(
+			fmt.Sprintf("      %s %s", iconText(v), paneLabel), nameWidth))
+		reasonCol = m.s.selected.Render(padRight(reason, reasonWidth))
 	} else {
 		nameCol = padRight(fmt.Sprintf("      %s %s", icon, paneLabel), nameWidth)
 		reasonCol = padRight(reason, reasonWidth)
 	}
 
 	return nameCol, reasonCol
-}
-
-func (m *tuiModel) viewTextInput() string {
-	if m.textTarget == nil {
-		return ""
-	}
-
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("  Type Response"))
-	b.WriteString("\n")
-	b.WriteString(headerStyle.Render("  ─────────────────────────────────────────"))
-	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  Target: %s\n", m.textTarget.Target))
-	b.WriteString(fmt.Sprintf("  Reason: %s\n", m.textTarget.Reason))
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  Enter=send  Escape=cancel"))
-	b.WriteString("\n\n")
-	b.WriteString("  " + m.textInput.View())
-	b.WriteString("\n")
-
-	return b.String()
 }
 
 // sessionIcon returns an icon string for a session group.
@@ -1266,20 +951,6 @@ func (m *tuiModel) autoNudgeCmd() tea.Cmd {
 	}
 }
 
-// riskLabel returns a styled risk string.
-func riskLabel(risk string) string {
-	switch risk {
-	case "low":
-		return riskLowStyle.Render("low")
-	case "medium":
-		return riskMedStyle.Render("med")
-	case "high":
-		return riskHighStyle.Render("HIGH")
-	default:
-		return risk
-	}
-}
-
 // jumpToPane switches the tmux client to the given pane target.
 // The target can be a session name ("mysession"), or a full pane target
 // ("mysession:0.1") to navigate to a specific window and pane.
@@ -1293,7 +964,7 @@ func jumpToPane(target string) string {
 }
 
 // truncate cuts a string to at most maxLen runes (not bytes), appending "..."
-// when truncation occurs. This is safe for multi-byte UTF-8 strings from LLM output.
+// when truncation occurs. This is safe for multi-byte UTF-8 strings from parser output.
 func truncate(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {
@@ -1303,51 +974,6 @@ func truncate(s string, maxLen int) string {
 		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-3]) + "..."
-}
-
-// wrapText wraps a string into lines of at most maxLen runes, breaking at spaces.
-// Uses rune-aware slicing to avoid cutting multi-byte UTF-8 characters.
-func wrapText(s string, maxLen int) []string {
-	if maxLen <= 0 {
-		return []string{s}
-	}
-	runes := []rune(s)
-	var lines []string
-	for len(runes) > 0 {
-		if len(runes) <= maxLen {
-			lines = append(lines, string(runes))
-			break
-		}
-		// Find last space before maxLen
-		cut := maxLen
-		for i := maxLen - 1; i > 0; i-- {
-			if runes[i] == ' ' {
-				cut = i
-				break
-			}
-		}
-		lines = append(lines, string(runes[:cut]))
-		// Skip leading spaces
-		for cut < len(runes) && runes[cut] == ' ' {
-			cut++
-		}
-		runes = runes[cut:]
-	}
-	return lines
-}
-
-// formatTokens formats a token count for display (e.g., "12.3k").
-func formatTokens(n int64) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 10000 {
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	}
-	if n < 1000000 {
-		return fmt.Sprintf("%.0fk", float64(n)/1000)
-	}
-	return fmt.Sprintf("%.1fM", float64(n)/1000000)
 }
 
 // padRight pads a string with spaces to reach the desired visible width.
