@@ -47,6 +47,28 @@ var (
 	codexCursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan — "›" cursor
 )
 
+// panelClickKind describes what happens when an action panel row is clicked.
+type panelClickKind int
+
+const (
+	clickNone   panelClickKind = iota // non-clickable (headers, text, separators)
+	clickAction                       // execute v.Actions[index]
+	clickToggle                       // toggle local checkbox for v.Actions[index]
+	clickTabBar                       // tab bar row: check X position against tabZones
+)
+
+// panelClickInfo maps an action panel row to its click behavior.
+type panelClickInfo struct {
+	kind  panelClickKind
+	index int // action index or -1
+}
+
+// tabClickZone maps an X range on the tab bar to a specific tab.
+type tabClickZone struct {
+	xStart, xEnd int // visible character range (0-indexed, relative to panel line)
+	tabIndex     int
+}
+
 // displayFilter controls which panes are visible in the TUI.
 type displayFilter int
 
@@ -77,8 +99,8 @@ func (f displayFilter) next() displayFilter {
 type focusPanel int
 
 const (
-	panelList    focusPanel = iota // left: session/pane list
-	panelActions                   // right: action buttons
+	panelList    focusPanel = iota // top: session/pane list
+	panelActions                   // bottom: action panel
 )
 
 // listItem represents a row in the grouped verdict list.
@@ -138,9 +160,10 @@ type tuiModel struct {
 	filter displayFilter
 
 	// grouped list
-	groups   []sessionGroup
-	expanded map[string]bool // session name -> expanded
-	items    []listItem      // visible items (rebuilt on verdicts/expand change)
+	groups          []sessionGroup
+	expanded        map[string]bool // session name -> expanded
+	manualCollapsed map[string]bool // sessions the user explicitly collapsed (immune to auto-expand)
+	items           []listItem      // visible items (rebuilt on verdicts/expand change)
 
 	// action panel state
 	actionCursor int  // selected action index (0-based) in the right panel
@@ -158,7 +181,13 @@ type tuiModel struct {
 	localTarget   string       // pane ID the buffered state belongs to (reset on switch)
 
 	// layout (computed in viewVerdictList, used for mouse hit testing)
-	actionPanelX int // X offset where the action panel starts
+	actionPanelY int // Y offset where the action panel starts
+	listStart    int // scroll offset for list (for mouse hit testing)
+
+	// Click target map for the action panel (populated during rendering).
+	// Index = line offset within the action panel; value = click behavior.
+	panelClicks []panelClickInfo
+	tabZones    []tabClickZone // X-position zones for the tab bar row
 
 	// dimensions
 	width  int
@@ -193,6 +222,7 @@ func (t *TUI) Run(ctx context.Context) error {
 		ctx:              ctx,
 		refreshInterval:  t.RefreshInterval,
 		expanded:         make(map[string]bool),
+		manualCollapsed:  make(map[string]bool),
 		textInput:        ti,
 		autoNudge:        t.AutoNudge,
 		autoNudgeMaxRisk: maxRisk,
@@ -274,8 +304,12 @@ func (m *tuiModel) rebuildGroups() {
 	// Auto-expand sessions that have blocked panes (the ones that need
 	// attention), and single-pane sessions (no benefit to collapsing).
 	// Sessions with only active/non-blocked panes stay collapsed.
-	// Users can still manually collapse/expand with Enter or left/right.
+	// Respect manual collapses: if the user explicitly collapsed a session,
+	// don't auto-expand it until the user re-expands it manually.
 	for _, g := range m.groups {
+		if m.manualCollapsed[g.name] {
+			continue
+		}
 		if len(g.verdicts) == 1 || g.blocked > 0 {
 			m.expanded[g.name] = true
 		}
@@ -438,7 +472,7 @@ func (m *tuiModel) submitBufferedSelection() tea.Cmd {
 	}
 
 	// Clean up
-	if m.scanner.Cache != nil {
+	if m.scanner != nil && m.scanner.Cache != nil {
 		m.scanner.Cache.Invalidate(target)
 		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 	}
@@ -448,7 +482,216 @@ func (m *tuiModel) submitBufferedSelection() tea.Cmd {
 	m.resetLocalChecks()
 	m.focus = panelList
 	m.scanning = true
-	return m.doScan()
+	if m.scanner != nil {
+		return m.doScan()
+	}
+	return nil
+}
+
+// navigateTab sends a tab navigation key ("Tab" or "BTab") to the target pane.
+// For multi-select questions, buffered toggle selections are sent first.
+// After sending, it invalidates the cache and triggers a rescan.
+func (m *tuiModel) navigateTab(key string) tea.Cmd {
+	v := m.selectedVerdict()
+	if v == nil {
+		return nil
+	}
+
+	// Multi-select: submit buffered toggles + send the navigation key.
+	if isMultiSelectQuestion(v) {
+		return m.submitBufferedAndSendKey(key)
+	}
+
+	// Single-select or confirm tab: send the key directly.
+	if err := NudgePane(v.Target, key, true); err != nil {
+		m.message = fmt.Sprintf("Send %s failed: %v", key, err)
+	} else {
+		dir := "next"
+		if key == "BTab" {
+			dir = "prev"
+		}
+		m.message = fmt.Sprintf("%s tab on %s", dir, v.Target)
+	}
+	if m.scanner != nil && m.scanner.Cache != nil {
+		m.scanner.Cache.Invalidate(v.Target)
+		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
+	}
+	m.editing = false
+	m.textInput.Blur()
+	m.textInput.SetValue("")
+	m.resetLocalChecks()
+	// Keep focus on the action panel: the user is navigating tabs, so
+	// they want to stay in the action panel to interact with the next tab.
+	m.focus = panelActions
+	m.actionCursor = 0
+	m.scanning = true
+	if m.scanner != nil {
+		return m.doScan()
+	}
+	return nil
+}
+
+// clickTab navigates to a specific tab by index. It computes the number of
+// Tab or BTab presses needed to reach the target from the current active tab,
+// then sends them. For multi-select questions, buffered selections are submitted
+// before the first navigation key.
+func (m *tuiModel) clickTab(v *model.Verdict, targetTab int) tea.Cmd {
+	// Determine the current active tab (same logic as renderTabBar).
+	tabs := parseTabsFromWaitingFor(v.WaitingFor)
+	if len(tabs) == 0 {
+		return nil
+	}
+	activeTab := 0
+	if isConfirmTab(v) {
+		activeTab = len(tabs) - 1
+	}
+
+	delta := targetTab - activeTab
+	if delta == 0 {
+		return nil // Already on the target tab
+	}
+
+	// Choose direction and key
+	key := "Tab"
+	steps := delta
+	if delta < 0 {
+		key = "BTab"
+		steps = -delta
+	}
+
+	// For a single step, delegate to navigateTab which handles buffered
+	// selections and rescanning.
+	if steps == 1 {
+		return m.navigateTab(key)
+	}
+
+	// Multi-step: submit buffered state once, then send multiple keys.
+	if isMultiSelectQuestion(v) {
+		m.initLocalChecks(v)
+		// Submit buffered toggles and the first navigation key
+		cmd := m.submitBufferedAndSendKey(key)
+		// Send remaining navigation keys directly
+		for i := 1; i < steps; i++ {
+			if err := NudgePane(v.Target, key, true); err != nil {
+				m.message = fmt.Sprintf("Tab navigation step %d failed: %v", i+1, err)
+				break
+			}
+		}
+		return cmd
+	}
+
+	// Non-multi-select: send all keys directly
+	for i := 0; i < steps; i++ {
+		if err := NudgePane(v.Target, key, true); err != nil {
+			m.message = fmt.Sprintf("Tab navigation step %d failed: %v", i+1, err)
+			break
+		}
+	}
+	dir := "forward"
+	if key == "BTab" {
+		dir = "backward"
+	}
+	m.message = fmt.Sprintf("Navigated %d tabs %s on %s", steps, dir, v.Target)
+
+	if m.scanner != nil && m.scanner.Cache != nil {
+		m.scanner.Cache.Invalidate(v.Target)
+		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
+	}
+	m.editing = false
+	m.textInput.Blur()
+	m.textInput.SetValue("")
+	m.resetLocalChecks()
+	m.focus = panelActions
+	m.actionCursor = 0
+	m.scanning = true
+	if m.scanner != nil {
+		return m.doScan()
+	}
+	return nil
+}
+
+// submitBufferedAndSendKey compiles the buffered local selection state into a
+// sequence of keystrokes (like submitBufferedSelection), but instead of sending
+// Enter at the end, sends the specified key. Used for Tab navigation in
+// multi-tab forms: save current tab's selections, then advance to the next tab.
+func (m *tuiModel) submitBufferedAndSendKey(key string) tea.Cmd {
+	v := m.selectedVerdict()
+	if v == nil {
+		return nil
+	}
+	target := v.Target
+
+	// Compute toggle diff: send keys only for options that changed.
+	var toggleIdxs []int
+	for i, desired := range m.localChecks {
+		if desired != m.initialChecks[i] {
+			toggleIdxs = append(toggleIdxs, i)
+		}
+	}
+	sort.Ints(toggleIdxs)
+
+	// Find custom answer option index (if any)
+	customIdx := -1
+	for i := range v.Actions {
+		if isCustomAnswerAction(v.Actions[i]) {
+			customIdx = i
+			break
+		}
+	}
+
+	customText := strings.TrimSpace(m.textInput.Value())
+
+	// Send toggle keys for regular options (not the custom answer)
+	for _, idx := range toggleIdxs {
+		if idx == customIdx {
+			continue
+		}
+		if idx < len(v.Actions) {
+			if err := NudgePane(target, v.Actions[idx].Keys, v.Actions[idx].Raw); err != nil {
+				m.message = fmt.Sprintf("Toggle option %d failed: %v", idx+1, err)
+			}
+		}
+	}
+
+	// Send custom answer if checked and has text
+	if customIdx >= 0 && m.localChecks[customIdx] && customText != "" {
+		a := v.Actions[customIdx]
+		if err := NudgePane(target, a.Keys, a.Raw); err != nil {
+			m.message = fmt.Sprintf("Custom answer activate failed: %v", err)
+		} else if err := NudgePane(target, customText, false); err != nil {
+			m.message = fmt.Sprintf("Custom answer text failed: %v", err)
+		} else if err := NudgePane(target, "Enter", true); err != nil {
+			m.message = fmt.Sprintf("Custom answer confirm failed: %v", err)
+		}
+	} else if customIdx >= 0 && m.localChecks[customIdx] != m.initialChecks[customIdx] {
+		a := v.Actions[customIdx]
+		if err := NudgePane(target, a.Keys, a.Raw); err != nil {
+			m.message = fmt.Sprintf("Toggle custom option failed: %v", err)
+		}
+	}
+
+	// Send the specified key (e.g., Tab) instead of Enter
+	if err := NudgePane(target, key, true); err != nil {
+		m.message = fmt.Sprintf("Send %s failed: %v", key, err)
+	} else if m.message == "" {
+		m.message = fmt.Sprintf("Sent selections + %s to %s", key, target)
+	}
+
+	// Clean up
+	if m.scanner != nil && m.scanner.Cache != nil {
+		m.scanner.Cache.Invalidate(target)
+		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
+	}
+	m.editing = false
+	m.textInput.Blur()
+	m.textInput.SetValue("")
+	m.resetLocalChecks()
+	m.focus = panelList
+	m.scanning = true
+	if m.scanner != nil {
+		return m.doScan()
+	}
+	return nil
 }
 
 // executeSelectedAction sends the currently highlighted action to the target pane
@@ -486,14 +729,17 @@ func (m *tuiModel) executeSelectedAction() tea.Cmd {
 		m.message = fmt.Sprintf("Sent '%s' to %s (%s)", action.Keys, v.Target, action.Label)
 	}
 	// Invalidate cache so the next scan re-evaluates this pane
-	if m.scanner.Cache != nil {
+	if m.scanner != nil && m.scanner.Cache != nil {
 		m.scanner.Cache.Invalidate(v.Target)
 		m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 	}
 	m.resetLocalChecks()
 	m.focus = panelList
 	m.scanning = true
-	return m.doScan()
+	if m.scanner != nil {
+		return m.doScan()
+	}
+	return nil
 }
 
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -577,13 +823,13 @@ func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Determine if click is in the action panel (third column)
-	if m.actionPanelX > 0 && msg.X >= m.actionPanelX {
+	// Determine if click is in the action panel (bottom section)
+	if m.actionPanelY > 0 && msg.Y >= m.actionPanelY {
 		return m.handleActionPanelClick(msg)
 	}
 
-	// Click in the left panel: header line is row 0, items start at row 1
-	clickedIdx := msg.Y - 1 // offset for header line
+	// Click in the list panel: header line is row 0, items start at row 1
+	clickedIdx := msg.Y - 1 + m.listStart // offset for header line + scroll
 	if clickedIdx < 0 || clickedIdx >= len(m.items) {
 		return m, nil
 	}
@@ -599,6 +845,11 @@ func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	} else {
 		// Session header: toggle expand/collapse
 		m.expanded[item.session] = !m.expanded[item.session]
+		if m.expanded[item.session] {
+			delete(m.manualCollapsed, item.session)
+		} else {
+			m.manualCollapsed[item.session] = true
+		}
 		m.rebuildItems()
 		if m.expanded[item.session] && m.cursor+1 < len(m.items) {
 			m.cursor++
@@ -615,44 +866,62 @@ func (m *tuiModel) handleActionPanelClick(msg tea.MouseMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	}
 
-	// Action panel layout: row 1 = header line (Y=1 in terminal)
-	// The action lines start after: target line + reason lines + blank separator
-	// We compute the action line offset from the panel layout.
-	reasonLines := len(wrapText(v.Reason, m.width*40/100))
-	if reasonLines == 0 {
-		reasonLines = 1
-	}
-	// Action panel rows (relative to first row in the panel area):
-	// row 0: target header
-	// rows 1..reasonLines: reason text
-	// row reasonLines+1: blank separator (but only first blank)
-	// rows reasonLines+2..: action lines (but row in panel = row in terminal - 1)
-	actionStartRow := 1 + reasonLines + 1 // target + reason + blank
-
-	// The panel starts at terminal row 1 (after the header line)
-	clickedPanelRow := msg.Y - 1 // terminal row 1 = panel row 0
-	actionIdx := clickedPanelRow - actionStartRow
-	if actionIdx < 0 || actionIdx >= len(v.Actions) || actionIdx >= 9 {
-		// Click wasn't on an action line — just move focus to action panel
+	// Use the click target tracking populated during rendering.
+	clickedPanelRow := msg.Y - m.actionPanelY
+	if clickedPanelRow < 0 || clickedPanelRow >= len(m.panelClicks) {
+		// Click outside the rendered panel — just focus it
 		m.focus = panelActions
 		m.clampActionCursor()
 		return m, nil
 	}
 
-	m.actionCursor = actionIdx
-	m.focus = panelActions
-	// Multi-select: clicking a toggle option toggles locally, not immediately
-	if isMultiSelectQuestion(v) {
-		m.initLocalChecks(v)
-		if isToggleAction(v.Actions[actionIdx]) {
-			m.localChecks[actionIdx] = !m.localChecks[actionIdx]
-			return m, nil
+	info := m.panelClicks[clickedPanelRow]
+	switch info.kind {
+	case clickAction:
+		if info.index < 0 || info.index >= len(v.Actions) {
+			break
 		}
-		if v.Actions[actionIdx].Label == "submit selection" {
+		m.actionCursor = info.index
+		m.focus = panelActions
+		// Multi-select submit
+		if isMultiSelectQuestion(v) && v.Actions[info.index].Label == "submit selection" {
 			return m, m.submitBufferedSelection()
 		}
+		return m, m.executeSelectedAction()
+
+	case clickToggle:
+		if info.index < 0 || info.index >= len(v.Actions) {
+			break
+		}
+		m.actionCursor = info.index
+		m.focus = panelActions
+		m.initLocalChecks(v)
+		m.localChecks[info.index] = !m.localChecks[info.index]
+		return m, nil
+
+	case clickTabBar:
+		// Look up which tab was clicked based on X position
+		for _, zone := range m.tabZones {
+			if msg.X >= zone.xStart && msg.X < zone.xEnd {
+				m.focus = panelActions
+				return m, m.clickTab(v, zone.tabIndex)
+			}
+		}
+		// Clicked on tab bar but not on a specific tab
+		m.focus = panelActions
+		m.clampActionCursor()
+		return m, nil
+
+	case clickNone:
+		// Non-clickable area — just focus the action panel
+		m.focus = panelActions
+		m.clampActionCursor()
+		return m, nil
 	}
-	return m, m.executeSelectedAction()
+
+	m.focus = panelActions
+	m.clampActionCursor()
+	return m, nil
 }
 
 func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -692,47 +961,51 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if item.kind == itemSession {
 			// Toggle expand/collapse
 			m.expanded[item.session] = !m.expanded[item.session]
+			if m.expanded[item.session] {
+				delete(m.manualCollapsed, item.session)
+			} else {
+				m.manualCollapsed[item.session] = true
+			}
 			m.rebuildItems()
 			if m.expanded[item.session] && m.cursor+1 < len(m.items) {
 				m.cursor++
 			}
 			return m, nil
 		}
-		// Pane item: navigate tmux to this pane
+		// Pane item: switch tmux client to this pane
 		if errMsg := jumpToPane(m.verdicts[item.paneIdx].Target); errMsg != "" {
 			m.message = errMsg
 		}
 		return m, nil
 
-	case "right", "l", "tab":
-		// Move focus to action panel if there are actions
+	case "right", "l":
+		if m.cursor < 0 || m.cursor >= len(m.items) {
+			return m, nil
+		}
+		item := m.items[m.cursor]
+		if item.kind == itemSession {
+			// Expand session and move to first pane
+			if !m.expanded[item.session] {
+				m.expanded[item.session] = true
+				delete(m.manualCollapsed, item.session)
+				m.rebuildItems()
+			}
+			if m.cursor+1 < len(m.items) {
+				m.cursor++
+			}
+			return m, nil
+		}
+		// Pane item: focus the action panel to interact with actions.
 		if m.selectedActionCount() > 0 {
 			m.focus = panelActions
 			v := m.selectedVerdict()
 			if v != nil {
 				m.actionCursor = v.Recommended
-				// Initialize buffered selection state for multi-select
 				if isMultiSelectQuestion(v) {
 					m.initLocalChecks(v)
 				}
-				// Auto-activate text input for custom answer dialogs
-				if hasQuestionWithCustomAnswer(v) {
-					m.editing = true
-					m.textInput.SetValue("")
-					m.textInput.Focus()
-				}
 			}
 			m.clampActionCursor()
-		} else if m.cursor >= 0 && m.cursor < len(m.items) {
-			// No actions: Enter/right on session expands
-			item := m.items[m.cursor]
-			if item.kind == itemSession {
-				m.expanded[item.session] = !m.expanded[item.session]
-				m.rebuildItems()
-				if m.expanded[item.session] && m.cursor+1 < len(m.items) {
-					m.cursor++
-				}
-			}
 		}
 		return m, nil
 
@@ -756,6 +1029,7 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// On session header: collapse
 		if m.expanded[item.session] {
 			m.expanded[item.session] = false
+			m.manualCollapsed[item.session] = true
 			m.rebuildItems()
 			if m.cursor >= len(m.items) {
 				m.cursor = len(m.items) - 1
@@ -837,8 +1111,8 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
-	case "esc", "escape", "left", "h":
-		// Return focus to the list panel, discard buffered selections
+	case "esc", "escape", "left":
+		// Return focus to the list panel, discard buffered selections.
 		m.resetLocalChecks()
 		m.focus = panelList
 		return m, nil
@@ -910,6 +1184,22 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "tab":
+		// Tab key: advance to next tab in multi-tab forms.
+		v := m.selectedVerdict()
+		if v != nil && hasTabNavigation(v) {
+			return m, m.navigateTab("Tab")
+		}
+		return m, nil
+
+	case "shift+tab":
+		// Shift+Tab: go to previous tab in multi-tab forms.
+		v := m.selectedVerdict()
+		if v != nil && hasTabNavigation(v) {
+			return m, m.navigateTab("BTab")
+		}
+		return m, nil
+
 	case "r":
 		m.focus = panelList
 		m.scanning = true
@@ -922,13 +1212,14 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleInlineTextInputKey handles keys when the inline text input is active
 // in the action panel. Most keys are forwarded to the text input widget, but
-// certain keys are intercepted to allow interaction with the action panel:
+// certain keys are intercepted:
 //   - Number keys 1-9: toggle local checkboxes (multi-select) or move cursor
-//   - Arrow keys up/down: navigate the action cursor
 //   - Space: toggle current checkbox locally (multi-select)
 //   - Enter: submit buffered selection (multi-select) or text (single-select)
+//   - Tab/Shift+Tab: navigate question tabs in multi-tab forms
 //   - Escape: discard changes and return to list
 //
+// Arrow keys and all other keys are forwarded to the text input widget.
 // All toggles are buffered locally and only sent to the target pane on Enter.
 func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -949,19 +1240,6 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		if m.textInput.Value() == "" {
 			return m, tea.Quit
 		}
-
-	case "up", "k":
-		if m.actionCursor > 0 {
-			m.actionCursor--
-		}
-		return m, nil
-
-	case "down", "j":
-		count := m.selectedActionCount()
-		if m.actionCursor < count-1 {
-			m.actionCursor++
-		}
-		return m, nil
 
 	case " ":
 		// Space toggles the current checkbox locally in multi-select
@@ -990,6 +1268,26 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 				}
 				// Single-select: just move cursor, don't send
 			}
+		}
+		return m, nil
+
+	case "tab":
+		// Tab in text input: advance to next tab in multi-tab forms.
+		// (left/right are NOT intercepted — they move the text cursor.)
+		v := m.selectedVerdict()
+		if v != nil && hasTabNavigation(v) {
+			return m, m.navigateTab("Tab")
+		}
+		// Not a multi-tab form: forward tab to text input
+		var tabCmd tea.Cmd
+		m.textInput, tabCmd = m.textInput.Update(msg)
+		return m, tabCmd
+
+	case "shift+tab":
+		// Shift+Tab in text input: go to previous tab in multi-tab forms.
+		v := m.selectedVerdict()
+		if v != nil && hasTabNavigation(v) {
+			return m, m.navigateTab("BTab")
 		}
 		return m, nil
 
@@ -1028,7 +1326,7 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 			}
 
 			// Invalidate cache so the next scan re-evaluates this pane
-			if m.scanner.Cache != nil {
+			if m.scanner != nil && m.scanner.Cache != nil {
 				m.scanner.Cache.Invalidate(target)
 				m.scanner.Metrics.RecordCacheInvalidation(m.ctx)
 			}
@@ -1037,9 +1335,15 @@ func (m *tuiModel) handleInlineTextInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		m.textInput.Blur()
 		m.textInput.SetValue("")
 		m.resetLocalChecks()
-		// Rescan after sending input
+		// Keep focus on the action panel: the user is navigating tabs, so
+		// they want to stay in the action panel to interact with the next tab.
+		m.focus = panelActions
+		m.actionCursor = 0
 		m.scanning = true
-		return m, m.doScan()
+		if m.scanner != nil {
+			return m, m.doScan()
+		}
+		return m, nil
 	}
 
 	// Forward all other keys to the text input component
@@ -1063,14 +1367,14 @@ func (m *tuiModel) viewVerdictList() string {
 	b.WriteString(titleStyle.Render("Pane Supervisor"))
 	b.WriteString("  ")
 	if m.focus == panelActions {
-		b.WriteString(dimStyle.Render("↑↓=select  Enter/click=execute  t=type  Esc/←=back  q=quit"))
+		b.WriteString(dimStyle.Render("↑↓=select  enter=execute  space=toggle  t=type  tab/s-tab=tabs  ←/esc=back  q=quit"))
 	} else {
 		autoLabel := "a=auto:OFF"
 		if m.autoNudge {
 			autoLabel = fmt.Sprintf("a=auto:ON(%s)", m.autoNudgeMaxRisk)
 		}
 		filterLabel := fmt.Sprintf("f=%s", m.filter)
-		b.WriteString(dimStyle.Render(fmt.Sprintf("Enter/click=jump  →/Tab=actions  1-9=action  t=type  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("↑↓=nav  enter=jump  →/l=actions  1-9=quick  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
 	}
 	if m.totalCacheHits > 0 {
 		b.WriteString("  ")
@@ -1092,7 +1396,7 @@ func (m *tuiModel) viewVerdictList() string {
 		return b.String()
 	}
 
-	// Layout widths: name | reason | actions
+	// Layout: 2-column list (name | reason) on top, action panel below
 	nameWidth := 10
 	for _, g := range m.groups {
 		if len(g.name)+6 > nameWidth {
@@ -1104,20 +1408,56 @@ func (m *tuiModel) viewVerdictList() string {
 	separator := " | "
 	sepWidth := len(separator)
 
-	// Actions panel gets 40% of width
-	actionWidth := m.width * 40 / 100
-	if actionWidth < 20 {
-		actionWidth = 20
-	}
-
-	// Reason gets whatever is left
-	reasonWidth := m.width - nameWidth - actionWidth - sepWidth*2
+	// Reason gets all remaining width (no action column)
+	reasonWidth := m.width - nameWidth - sepWidth
 	if reasonWidth < 15 {
 		reasonWidth = 15
 	}
 
-	// Store the X offset where the action panel starts (for mouse hit testing)
-	m.actionPanelX = nameWidth + sepWidth + reasonWidth + sepWidth
+	// Build action panel content (full terminal width with margin)
+	actionPanelWidth := m.width - 2
+	if actionPanelWidth < 20 {
+		actionPanelWidth = 20
+	}
+	actionLines := m.buildActionPanel(actionPanelWidth)
+
+	// Height budget: header(1) + list + separator(1) + action panel + summary(1) + hints(1) + status(0-1)
+	overhead := 4 // header + separator + summary + hints
+	if m.message != "" {
+		overhead++
+	}
+	available := m.height - overhead
+	if available < 6 {
+		available = 6
+	}
+
+	// Layout: give each panel what it needs; scroll/truncate only when space is tight
+	totalActionLines := len(actionLines)
+	totalItems := len(m.items)
+	var listHeight, actionHeight int
+
+	if totalItems+totalActionLines <= available {
+		// Everything fits — no scrolling, no padding
+		listHeight = totalItems
+		actionHeight = totalActionLines
+	} else {
+		// Tight on space: action gets what it needs (up to half), list gets the rest
+		actionHeight = totalActionLines
+		maxActionHeight := available / 2
+		if maxActionHeight < 6 {
+			maxActionHeight = 6
+		}
+		if actionHeight > maxActionHeight {
+			actionHeight = maxActionHeight
+		}
+		if actionHeight < 1 {
+			actionHeight = 1
+		}
+		listHeight = available - actionHeight
+		if listHeight < 3 {
+			listHeight = 3
+		}
+	}
 
 	// Count totals
 	totalBlocked := 0
@@ -1127,17 +1467,8 @@ func (m *tuiModel) viewVerdictList() string {
 		totalActive += g.active
 	}
 
-	// Available lines for the panels
-	panelHeight := m.height - 3
-	if panelHeight < 3 {
-		panelHeight = 3
-	}
-
 	// Calculate visible window for scrolling
-	maxVisible := panelHeight - 1
-	if maxVisible < 2 {
-		maxVisible = 2
-	}
+	maxVisible := listHeight
 	if maxVisible > len(m.items) {
 		maxVisible = len(m.items)
 	}
@@ -1154,12 +1485,9 @@ func (m *tuiModel) viewVerdictList() string {
 		end = maxVisible
 	}
 
-	// Build action panel lines for the right column
-	actionLines := m.buildActionPanel(actionWidth)
-
-	// Render rows
+	// Render list rows (2 columns: name | reason — no action column)
 	sep := headerStyle.Render(separator)
-	row := 0
+	listRowsRendered := 0
 	for i := start; i < end && i < len(m.items); i++ {
 		item := m.items[i]
 		var nameCol, reasonCol string
@@ -1170,36 +1498,32 @@ func (m *tuiModel) viewVerdictList() string {
 			nameCol, reasonCol = m.renderPaneRow(item, i, nameWidth, reasonWidth)
 		}
 
-		// Action column
-		actionCol := ""
-		if row < len(actionLines) {
-			actionCol = actionLines[row]
-		}
-
 		b.WriteString(nameCol)
 		b.WriteString(sep)
 		b.WriteString(reasonCol)
-		b.WriteString(sep)
-		b.WriteString(actionCol)
 		b.WriteString("\n")
-		row++
+		listRowsRendered++
 	}
 
-	// Fill remaining panel height with action-only rows
-	for row < panelHeight-1 {
-		actionCol := ""
-		if row < len(actionLines) {
-			actionCol = actionLines[row]
-		}
-		if actionCol != "" {
-			b.WriteString(padRight("", nameWidth))
-			b.WriteString(sep)
-			b.WriteString(padRight("", reasonWidth))
-			b.WriteString(sep)
-			b.WriteString(actionCol)
-			b.WriteString("\n")
-		}
-		row++
+	// Pad remaining list rows to keep action panel position stable
+	for listRowsRendered < listHeight {
+		b.WriteString("\n")
+		listRowsRendered++
+	}
+
+	// Separator between list and action panel
+	b.WriteString(dimStyle.Render(strings.Repeat("─", m.width)))
+	b.WriteString("\n")
+
+	// Store layout offsets for mouse hit testing
+	m.actionPanelY = 1 + listHeight + 1 // header + list rows + separator
+	m.listStart = start                 // scroll offset
+
+	// Action panel (full width, indented 1 space)
+	for i := 0; i < actionHeight && i < len(actionLines); i++ {
+		b.WriteString(" ")
+		b.WriteString(actionLines[i])
+		b.WriteString("\n")
 	}
 
 	// Summary line
@@ -1215,6 +1539,10 @@ func (m *tuiModel) viewVerdictList() string {
 	b.WriteString(dimStyle.Render(summary))
 	b.WriteString("\n")
 
+	// Navigation hints (context-dependent)
+	b.WriteString(dimStyle.Render(m.buildHints()))
+	b.WriteString("\n")
+
 	// Status message
 	if m.message != "" {
 		b.WriteString(statusStyle.Render("  " + m.message))
@@ -1222,6 +1550,28 @@ func (m *tuiModel) viewVerdictList() string {
 	}
 
 	return b.String()
+}
+
+// buildHints returns a context-dependent keybinding hint line.
+func (m *tuiModel) buildHints() string {
+	if m.editing {
+		hint := "  enter submit  esc cancel"
+		v := m.selectedVerdict()
+		if v != nil && hasTabNavigation(v) {
+			hint += "  tab/s-tab tabs"
+		}
+		return hint
+	}
+	if m.focus == panelActions {
+		hint := "  ↑↓ navigate  enter execute  ←/esc back  t type"
+		v := m.selectedVerdict()
+		if v != nil && hasTabNavigation(v) {
+			hint += "  tab/s-tab tabs"
+		}
+		return hint
+	}
+	// List panel
+	return "  ↑↓ navigate  enter jump  →/l actions  1-9 quick  r rescan  f filter  q quit"
 }
 
 // buildActionPanel builds the lines for the right-hand action panel showing
@@ -1233,17 +1583,19 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		return nil
 	}
 
+	// Reset click target tracking for this render cycle.
+	m.panelClicks = nil
+	m.tabZones = nil
+
 	var lines []string
 
 	// Target header
-	lines = append(lines, dimStyle.Render(truncate(v.Target, width)))
+	lines = m.addPanelLine(lines, dimStyle.Render(truncate(v.Target, width)), clickNone, -1)
 
 	if !v.Blocked {
-		lines = append(lines, activeStyle.Render("Active"))
+		lines = m.addPanelLine(lines, activeStyle.Render("Active"), clickNone, -1)
 		if v.Reason != "" {
-			for _, rl := range wrapText(v.Reason, width) {
-				lines = append(lines, dimStyle.Render(rl))
-			}
+			lines = m.addPanelLines(lines, wrapText(v.Reason, width))
 		}
 		return lines
 	}
@@ -1253,15 +1605,31 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		return m.buildMultiSelectPanel(v, width, lines)
 	}
 
+	// Confirm tab: render tab bar + review content + submit/dismiss actions.
+	if isConfirmTab(v) {
+		return m.buildConfirmTabPanel(v, width, lines)
+	}
+
+	// Render tab bar for single-select tabs in multi-tab forms.
+	if hasTabNavigation(v) {
+		lines = m.renderTabBar(v, width, lines)
+	}
+
 	// Blocked: render agent-specific dialog representation
-	lines = append(lines, renderDialogContent(v, width)...)
-	lines = append(lines, "") // blank separator
+	lines = m.addPanelLines(lines, renderDialogContent(v, width))
+	lines = m.addPanelLine(lines, "", clickNone, -1) // blank separator
 
 	// Actions with number keys — highlight selected when panel is focused
 	focused := m.focus == panelActions
 	for i, a := range v.Actions {
 		if i >= 9 {
 			break
+		}
+
+		// Skip Tab/BTab actions from the numbered list — they're handled by
+		// the tab bar and the Tab key binding, not as clickable actions.
+		if a.Keys == "Tab" || a.Keys == "BTab" {
+			continue
 		}
 
 		rec := " "
@@ -1274,20 +1642,25 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		label = truncate(label, width)
 
 		if focused && i == m.actionCursor {
-			lines = append(lines, selectedStyle.Render(padRight("→"+label[1:], width)))
+			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+label[1:], width)), clickAction, i)
 		} else {
-			lines = append(lines, label)
+			lines = m.addPanelLine(lines, label, clickAction, i)
 		}
 	}
 
-	// Show inline text input for question dialogs with a custom answer option
-	// (always visible, no need to activate the option first), or when
-	// explicitly editing via 't' key for other panes.
-	if hasQuestionWithCustomAnswer(v) || m.editing {
-		lines = append(lines, m.renderInlineTextInput(width)...)
+	// Show inline text input only when the action panel is focused:
+	// - For question dialogs with a custom answer option: always show when focused
+	// - For other panes: only show when explicitly editing via 't' key
+	// Never show when the list panel has focus.
+	if focused && (hasQuestionWithCustomAnswer(v) || m.editing) {
+		lines = m.addPanelLines(lines, m.renderInlineTextInput(width))
 	} else if focused {
-		lines = append(lines, "")
-		lines = append(lines, dimStyle.Render("  t = type custom response"))
+		lines = m.addPanelLine(lines, "", clickNone, -1)
+		hint := "  t = type custom response"
+		if hasTabNavigation(v) {
+			hint = "  tab/s-tab=tabs  t = type"
+		}
+		lines = m.addPanelLine(lines, dimStyle.Render(hint), clickNone, -1)
 	}
 
 	return lines
@@ -1362,6 +1735,16 @@ func renderOpenCodeDialog(v *model.Verdict, width int) []string {
 	if content == "" {
 		content = v.Reason
 	}
+
+	// Strip [tabs] prefix — already rendered as a tab bar above.
+	if strings.HasPrefix(content, "[tabs] ") {
+		if idx := strings.Index(content, "\n"); idx >= 0 {
+			content = content[idx+1:]
+		} else {
+			content = ""
+		}
+	}
+
 	contentWidth := width - borderWidth
 	if contentWidth < 10 {
 		contentWidth = 10
@@ -1555,6 +1938,181 @@ func isMultiSelectQuestion(v *model.Verdict) bool {
 	return strings.Contains(v.WaitingFor, "[ ]") || strings.Contains(v.WaitingFor, "[✓]")
 }
 
+// hasTabNavigation returns true if the verdict has Tab/BTab actions (multi-tab form).
+func hasTabNavigation(v *model.Verdict) bool {
+	if v == nil || !v.Blocked {
+		return false
+	}
+	for _, a := range v.Actions {
+		if a.Keys == "Tab" && a.Label == "next tab" {
+			return true
+		}
+	}
+	return false
+}
+
+// isConfirmTab returns true if the verdict represents a Confirm tab
+// of a multi-question form (review + submit).
+func isConfirmTab(v *model.Verdict) bool {
+	return v != nil && v.Blocked && strings.Contains(v.Reason, "confirm tab")
+}
+
+// parseTabsFromWaitingFor extracts tab names from WaitingFor text.
+// The parser encodes them as "[tabs] Name1 | Name2 | Confirm" on the first line.
+func parseTabsFromWaitingFor(waitingFor string) []string {
+	lines := strings.Split(waitingFor, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[tabs] ") {
+			raw := strings.TrimPrefix(line, "[tabs] ")
+			parts := strings.Split(raw, " | ")
+			var tabs []string
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					tabs = append(tabs, p)
+				}
+			}
+			return tabs
+		}
+	}
+	return nil
+}
+
+// addPanelLine appends a line to the action panel and records its click target.
+func (m *tuiModel) addPanelLine(lines []string, line string, kind panelClickKind, index int) []string {
+	m.panelClicks = append(m.panelClicks, panelClickInfo{kind: kind, index: index})
+	return append(lines, line)
+}
+
+// addPanelLines appends multiple non-clickable lines to the action panel.
+func (m *tuiModel) addPanelLines(lines []string, newLines []string) []string {
+	for _, nl := range newLines {
+		lines = m.addPanelLine(lines, nl, clickNone, -1)
+	}
+	return lines
+}
+
+// renderTabBar renders a horizontal tab header bar for multi-tab question forms
+// and records click zones so each tab is individually clickable.
+// The active tab is determined by the verdict's Reason (confirm tab) or by being
+// the only tab with numbered options visible.
+func (m *tuiModel) renderTabBar(v *model.Verdict, width int, lines []string) []string {
+	tabs := parseTabsFromWaitingFor(v.WaitingFor)
+	if len(tabs) == 0 {
+		return lines
+	}
+
+	// Determine which tab is active. The Confirm tab has a distinct reason.
+	// Default to the first tab; override to the last tab for Confirm.
+	activeTab := 0
+	if isConfirmTab(v) {
+		activeTab = len(tabs) - 1
+	}
+
+	var bar strings.Builder
+	xPos := 0 // visible character position
+	for i, tab := range tabs {
+		if i > 0 {
+			bar.WriteString("  ")
+			xPos += 2
+		}
+		tabText := " " + tab + " "
+		tabWidth := len([]rune(tabText))
+
+		// Record click zone for this tab
+		m.tabZones = append(m.tabZones, tabClickZone{
+			xStart:   xPos,
+			xEnd:     xPos + tabWidth,
+			tabIndex: i,
+		})
+
+		if i == activeTab {
+			bar.WriteString(selectedStyle.Render(tabText))
+		} else {
+			bar.WriteString(dimStyle.Render(tabText))
+		}
+		xPos += tabWidth
+	}
+
+	tabLine := bar.String()
+	// Tab bar line is clickable (X-position checked against zones)
+	lines = m.addPanelLine(lines, tabLine, clickTabBar, -1)
+	// Blank separator after tab bar
+	lines = m.addPanelLine(lines, "", clickNone, -1)
+	return lines
+}
+
+// buildConfirmTabPanel renders the Confirm tab of a multi-question form.
+// Shows tab bar, review summary content, and Submit/Dismiss actions.
+func (m *tuiModel) buildConfirmTabPanel(v *model.Verdict, width int, lines []string) []string {
+	focused := m.focus == panelActions
+	borderStyle := accentBorderStyle
+	border := "┃ "
+	borderWidth := 2
+	contentWidth := width - borderWidth
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+
+	// Render tab header bar
+	lines = m.renderTabBar(v, width, lines)
+
+	// Extract review content from WaitingFor (after "[confirm tab]" line).
+	wfLines := strings.Split(v.WaitingFor, "\n")
+	inReview := false
+	for _, wl := range wfLines {
+		trimmed := strings.TrimSpace(wl)
+		if trimmed == "[confirm tab]" {
+			inReview = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[tabs] ") {
+			continue // skip tab header line
+		}
+		if inReview && trimmed != "" {
+			for _, rl := range wrapText(trimmed, contentWidth) {
+				lines = m.addPanelLine(lines, borderStyle.Render(border)+rl, clickNone, -1)
+			}
+		}
+	}
+
+	lines = m.addPanelLine(lines, "", clickNone, -1)
+
+	// Actions: Submit all answers, Tab, BTab, Escape
+	for i, a := range v.Actions {
+		if i >= 9 {
+			break
+		}
+		// Skip Tab/BTab from the numbered list
+		if a.Keys == "Tab" || a.Keys == "BTab" {
+			continue
+		}
+
+		rec := " "
+		if i == v.Recommended {
+			rec = "*"
+		}
+
+		riskStr := riskLabel(a.Risk)
+		label := fmt.Sprintf(" %s[%s] %s (%s)", rec, a.Keys, a.Label, riskStr)
+		label = truncate(label, width)
+
+		if focused && i == m.actionCursor {
+			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+label[1:], width)), clickAction, i)
+		} else {
+			lines = m.addPanelLine(lines, label, clickAction, i)
+		}
+	}
+
+	if focused {
+		lines = m.addPanelLine(lines, "", clickNone, -1)
+		lines = m.addPanelLine(lines, dimStyle.Render("  enter=submit all  tab/s-tab=tabs  esc=dismiss"), clickNone, -1)
+	}
+
+	return lines
+}
+
 // initLocalChecks initializes the buffered selection state for a multi-select
 // question verdict. It parses the initial checked state from WaitingFor and
 // copies it into both localChecks (mutable) and initialChecks (immutable).
@@ -1660,18 +2218,32 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		m.initLocalChecks(v)
 	}
 
+	// Render tab header bar for multi-tab question forms.
+	lines = m.renderTabBar(v, width, lines)
+
 	// Parse question text and checkbox options.
 	// Use localChecks for checked state if available (buffered selection),
 	// otherwise fall back to parser state from WaitingFor.
 	questionText, checkItems := parseChecklist(v.WaitingFor)
 
+	// Strip [tabs] prefix from question text (already rendered as tab bar).
+	if strings.HasPrefix(questionText, "[tabs] ") {
+		// Remove the [tabs] line
+		tabLines := strings.SplitN(questionText, "\n", 2)
+		if len(tabLines) > 1 {
+			questionText = strings.TrimSpace(tabLines[1])
+		} else {
+			questionText = ""
+		}
+	}
+
 	// Question text with blue border
 	if questionText != "" {
 		for _, wl := range wrapText(questionText, contentWidth) {
-			lines = append(lines, borderStyle.Render(border)+wl)
+			lines = m.addPanelLine(lines, borderStyle.Render(border)+wl, clickNone, -1)
 		}
 	}
-	lines = append(lines, "")
+	lines = m.addPanelLine(lines, "", clickNone, -1)
 
 	// Render each option as a navigable checkbox line.
 	// actionCursor 0..N-1 maps to toggle actions, N+ maps to submit/dismiss.
@@ -1713,22 +2285,22 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		line = truncate(line, width)
 
 		if focused && m.actionCursor == i {
-			lines = append(lines, selectedStyle.Render(padRight("→"+line[1:], width)))
+			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+line[1:], width)), clickToggle, i)
 		} else {
 			// line = " [ ] 1. label" — style the leading " [ ]" (4 chars), then append the rest unstyled.
-			lines = append(lines, checkStyle.Render(line[:4])+line[4:])
+			lines = m.addPanelLine(lines, checkStyle.Render(line[:4])+line[4:], clickToggle, i)
 		}
 
 		// Description in dim, indented
 		if item.description != "" && !isCustomOpt {
 			desc := "      " + item.description
 			desc = truncate(desc, width)
-			lines = append(lines, dimStyle.Render(desc))
+			lines = m.addPanelLine(lines, dimStyle.Render(desc), clickNone, -1)
 		}
 
 		// Render the generic text input under the custom answer option
 		if isCustomOpt {
-			lines = append(lines, m.renderInlineTextInput(width)...)
+			lines = m.addPanelLines(lines, m.renderInlineTextInput(width))
 			textInputRendered = true
 		}
 	}
@@ -1736,18 +2308,22 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 	// Fallback: if the text input wasn't rendered under a custom option
 	// (e.g., option truncated from WaitingFor), show it when editing via 't'.
 	if m.editing && !textInputRendered {
-		lines = append(lines, m.renderInlineTextInput(width)...)
+		lines = m.addPanelLines(lines, m.renderInlineTextInput(width))
 	}
 
-	lines = append(lines, "")
+	lines = m.addPanelLine(lines, "", clickNone, -1)
 
-	// Submit and Dismiss actions (after toggle options in the actions array)
+	// Submit and Dismiss actions (after toggle options in the actions array).
+	// Tab/BTab are handled by the tab bar + keyboard, not shown as actions.
 	toggleCount := len(checkItems)
 	if toggleCount > len(v.Actions) {
 		toggleCount = len(v.Actions)
 	}
 	for i := toggleCount; i < len(v.Actions) && i < toggleCount+4; i++ {
 		a := v.Actions[i]
+		if a.Keys == "Tab" || a.Keys == "BTab" {
+			continue
+		}
 		rec := " "
 		if i == v.Recommended {
 			rec = "*"
@@ -1756,15 +2332,15 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		label = truncate(label, width)
 
 		if focused && m.actionCursor == i {
-			lines = append(lines, selectedStyle.Render(padRight("→"+label[1:], width)))
+			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+label[1:], width)), clickAction, i)
 		} else {
-			lines = append(lines, label)
+			lines = m.addPanelLine(lines, label, clickAction, i)
 		}
 	}
 
 	// Hint line with pending changes indicator
 	if focused {
-		lines = append(lines, "")
+		lines = m.addPanelLine(lines, "", clickNone, -1)
 		// Count pending changes
 		pendingChanges := 0
 		if m.localChecks != nil {
@@ -1786,10 +2362,13 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		if optCount > 0 {
 			hint = fmt.Sprintf("  space/1-%d=toggle  enter=submit  esc=discard", optCount)
 		}
+		if hasTabNavigation(v) {
+			hint += "  tab/s-tab=tabs"
+		}
 		if pendingChanges > 0 {
 			hint += fmt.Sprintf("  (%d pending)", pendingChanges)
 		}
-		lines = append(lines, dimStyle.Render(hint))
+		lines = m.addPanelLine(lines, dimStyle.Render(hint), clickNone, -1)
 	}
 
 	return lines

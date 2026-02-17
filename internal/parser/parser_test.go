@@ -1664,3 +1664,226 @@ func TestIsNumberedOption(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTabHeaders(t *testing.T) {
+	tests := []struct {
+		name  string
+		lines []string
+		want  []string
+	}{
+		{
+			name: "realistic OpenCode multi-tab",
+			lines: strings.Split(`
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Which features? (select all that apply)
+  ┃
+  ┃  1. [ ] Option A
+  ┃  2. [ ] Option B
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+`, "\n"),
+			want: []string{"Next steps", "Aspire wt config", "Skill overlap", "Confirm"},
+		},
+		{
+			name: "two tabs plus confirm",
+			lines: strings.Split(`
+  ┃   Database   Config   Confirm
+  ┃
+  ┃  Which database?
+`, "\n"),
+			want: []string{"Database", "Config", "Confirm"},
+		},
+		{
+			name: "no tabs single question",
+			lines: strings.Split(`
+  ┃  Which database?
+  ┃
+  ┃  1. PostgreSQL
+  ┃  2. SQLite
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+`, "\n"),
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseTabHeaders(tt.lines)
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("expected nil, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("expected %d tabs, got %d: %v", len(tt.want), len(got), got)
+				return
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("tab[%d]: got %q, want %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestSplitTabSegments(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"Next steps   Aspire wt config   Skill overlap   Confirm",
+			[]string{"Next steps", "Aspire wt config", "Skill overlap", "Confirm"}},
+		{"Database   Config   Confirm",
+			[]string{"Database", "Config", "Confirm"}},
+		{"Single tab only", nil}, // only 1 segment
+		{"A   B", []string{"A", "B"}},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := splitTabSegments(tt.input)
+			if tt.want == nil {
+				if len(got) >= 2 {
+					t.Errorf("expected <2 segments, got %v", got)
+				}
+				return
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("expected %d segments, got %d: %v", len(tt.want), len(got), got)
+				return
+			}
+			for i, w := range tt.want {
+				if got[i] != w {
+					t.Errorf("segment[%d]: got %q, want %q", i, got[i], w)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenCode_QuestionDialogMultiTab(t *testing.T) {
+	// Multi-question form with tab headers and ⇆ tab footer.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Now that superpowers is installed, what would you like to do next? (select all that apply)
+  ┃
+  ┃  1. [ ] Configure wt for multi-repo
+  ┃     Set up custom pattern on both machines
+  ┃  2. [ ] Add wt hooks
+  ┃     Configure post_create/post_checkout hooks
+  ┃  3. [ ] Type your own answer
+  ┃
+  ┃  ⇆ tab  ↑↓ select  enter toggle  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	if !result.Blocked {
+		t.Error("expected Blocked=true")
+	}
+	// WaitingFor should contain tab header info
+	if !strings.Contains(result.WaitingFor, "[tabs]") {
+		t.Errorf("WaitingFor should contain [tabs], got: %q", result.WaitingFor)
+	}
+	if !strings.Contains(result.WaitingFor, "Next steps") {
+		t.Errorf("WaitingFor should contain tab name, got: %q", result.WaitingFor)
+	}
+	// Should have Tab and BTab actions
+	hasTab := false
+	hasBTab := false
+	for _, a := range result.Actions {
+		if a.Keys == "Tab" {
+			hasTab = true
+		}
+		if a.Keys == "BTab" {
+			hasBTab = true
+		}
+	}
+	if !hasTab {
+		t.Error("expected Tab action for multi-tab navigation")
+	}
+	if !hasBTab {
+		t.Error("expected BTab action for multi-tab navigation")
+	}
+	// Should still have toggle actions
+	if len(result.Actions) < 3 {
+		t.Errorf("expected at least 3 actions (toggles + submit + tab + dismiss), got %d", len(result.Actions))
+	}
+}
+
+func TestOpenCode_ConfirmTab(t *testing.T) {
+	// Confirm tab of a multi-question form: shows "Review" with answer summary,
+	// no numbered options, and "⇆ tab" + "enter submit" footer.
+	// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+	content := `
+  ┃   Next steps   Aspire wt config   Skill overlap   Confirm
+  ┃
+  ┃  Review
+  ┃
+  ┃  Next steps: Configure wt for multi-repo, Add wt hooks
+  ┃  Aspire wt config: (not answered)
+  ┃  Skill overlap: Authentication
+  ┃
+  ┃  ⇆ tab  enter submit  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	if !result.Blocked {
+		t.Error("expected Blocked=true")
+	}
+	if !strings.Contains(result.Reason, "confirm") {
+		t.Errorf("reason should mention confirm, got: %q", result.Reason)
+	}
+	// WaitingFor should contain tab headers and review content
+	if !strings.Contains(result.WaitingFor, "[confirm tab]") {
+		t.Errorf("WaitingFor should contain [confirm tab], got: %q", result.WaitingFor)
+	}
+	if !strings.Contains(result.WaitingFor, "Configure wt") {
+		t.Errorf("WaitingFor should contain review answers, got: %q", result.WaitingFor)
+	}
+	// Should have Enter (submit), Tab, BTab, Escape actions
+	if len(result.Actions) != 4 {
+		t.Errorf("expected 4 actions (Enter, Tab, BTab, Escape), got %d", len(result.Actions))
+	}
+	if result.Actions[0].Keys != "Enter" || result.Actions[0].Label != "submit all answers" {
+		t.Errorf("first action should be Enter/submit, got: %+v", result.Actions[0])
+	}
+}
+
+func TestOpenCode_SingleQuestionNoTabs(t *testing.T) {
+	// Single question without tabs — no Tab/BTab actions.
+	content := `
+  ┃  Which database?
+  ┃
+  ┃  1. PostgreSQL
+  ┃  2. SQLite
+  ┃
+  ┃  ↑↓ select  enter submit  esc dismiss
+  ┃
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected result, got nil")
+	}
+	for _, a := range result.Actions {
+		if a.Keys == "Tab" || a.Keys == "BTab" {
+			t.Errorf("single question should not have Tab/BTab actions, found: %+v", a)
+		}
+	}
+	if strings.Contains(result.WaitingFor, "[tabs]") {
+		t.Errorf("single question should not have [tabs] in WaitingFor, got: %q", result.WaitingFor)
+	}
+}

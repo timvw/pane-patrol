@@ -151,8 +151,10 @@ func extractOptionLabels(lines []string) []string {
 	for _, line := range lines {
 		stripped := stripDialogPrefix(strings.TrimSpace(line))
 		if isNumberedOption(stripped) {
-			// Skip past "N. " (3 chars)
-			label := strings.TrimSpace(stripped[3:])
+			// Skip past "N. " (3 chars), then trim right-side panel junk.
+			// Terminal captures may include status bar content on the right
+			// side of the line, separated by large whitespace gaps.
+			label := trimRightPanel(strings.TrimSpace(stripped[3:]))
 			labels = append(labels, label)
 			if len(labels) >= 9 {
 				break
@@ -160,6 +162,26 @@ func extractOptionLabels(lines []string) []string {
 		}
 	}
 	return labels
+}
+
+// trimRightPanel removes right-side status bar content from a terminal line.
+// OpenCode's TUI has a split layout where the dialog is on the left and file
+// listings/status are on the right. In terminal captures these appear as one
+// long line separated by a large gap of whitespace (10+ spaces).
+func trimRightPanel(s string) string {
+	// Find first run of 10+ spaces — everything after is right-panel junk
+	spaceCount := 0
+	for i, ch := range s {
+		if ch == ' ' {
+			spaceCount++
+			if spaceCount >= 10 {
+				return strings.TrimSpace(s[:i-spaceCount+1])
+			}
+		} else {
+			spaceCount = 0
+		}
+	}
+	return s
 }
 
 // extractQuestionSummary extracts question text and visible options from
@@ -170,7 +192,7 @@ func extractQuestionSummary(lines []string) string {
 	// prefixes (┃ from OpenCode, › from Codex) before checking.
 	firstOptIdx := -1
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		trimmed := trimRightPanel(strings.TrimSpace(line))
 		stripped := stripDialogPrefix(trimmed)
 		if isNumberedOption(stripped) {
 			firstOptIdx = i
@@ -185,7 +207,7 @@ func extractQuestionSummary(lines []string) string {
 	// Strip border prefixes so the output is clean.
 	var questionLines []string
 	for i := firstOptIdx - 1; i >= 0 && len(questionLines) < 4; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+		trimmed := trimRightPanel(strings.TrimSpace(lines[i]))
 		stripped := stripDialogPrefix(trimmed)
 		if stripped == "" && len(questionLines) > 0 {
 			break
@@ -204,10 +226,15 @@ func extractQuestionSummary(lines []string) string {
 	// lines before the next numbered option or footer. We collect up to 6
 	// options with up to 2 description lines each. Border/cursor prefixes
 	// are stripped so the output is clean.
+	//
+	// IMPORTANT: trimRightPanel is applied BEFORE stripDialogPrefix so that
+	// right-panel junk separated by 10+ spaces from the border character is
+	// caught. If applied after, stripDialogPrefix's TrimLeft collapses the
+	// gap and leaves the junk word (e.g., "tool" from a wrapped path).
 	var optionLines []string
 	optCount := 0
 	for i := firstOptIdx; i < len(lines) && optCount < 9; i++ {
-		trimmed := strings.TrimSpace(lines[i])
+		trimmed := trimRightPanel(strings.TrimSpace(lines[i]))
 		stripped := stripDialogPrefix(trimmed)
 		if isNumberedOption(stripped) {
 			optionLines = append(optionLines, stripped)
@@ -215,7 +242,7 @@ func extractQuestionSummary(lines []string) string {
 			// Collect description lines below this option (up to 2)
 			descCount := 0
 			for j := i + 1; j < len(lines) && descCount < 2; j++ {
-				dt := strings.TrimSpace(lines[j])
+				dt := trimRightPanel(strings.TrimSpace(lines[j]))
 				ds := stripDialogPrefix(dt)
 				if ds == "" || isNumberedOption(ds) {
 					break
@@ -243,6 +270,88 @@ func extractQuestionSummary(lines []string) string {
 		return options
 	}
 	return "question dialog"
+}
+
+// parseTabHeaders extracts tab names from an OpenCode multi-question dialog.
+// OpenCode renders tab headers as space-separated labels in a row above the
+// question text. Tab names are separated by 3+ spaces. The last tab is always
+// "Confirm" (added by the TUI, not from question data).
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/question.tsx
+//
+// Example: "  ┃   Next steps   Aspire wt config   Skill overlap   Confirm"
+// Returns: ["Next steps", "Aspire wt config", "Skill overlap", "Confirm"]
+//
+// The search is bottom-up and restricted to lines inside the dialog box
+// (those with a ┃ border prefix) to avoid matching unrelated content like
+// table headers in scrollback.
+//
+// Returns nil if no tab header line is found.
+func parseTabHeaders(lines []string) []string {
+	// Search bottom-up: the tab header is above the question options, inside
+	// the dialog. Only consider lines with a dialog border prefix (┃ or ›)
+	// to avoid matching table headers or other content from scrollback.
+	for i := len(lines) - 1; i >= 0; i-- {
+		// Apply trimRightPanel early: right-panel status bar content (paths,
+		// git branches) is separated by 10+ spaces. Without this, a review
+		// line like "Skill overlap: ... <100 spaces> ~/path" gets 2 segments
+		// and is misidentified as a tab header.
+		trimmed := trimRightPanel(strings.TrimSpace(lines[i]))
+		if trimmed == "" {
+			continue
+		}
+		// Only consider lines inside the dialog box
+		if !hasDialogPrefix(trimmed) {
+			continue
+		}
+		stripped := stripDialogPrefix(trimmed)
+		if stripped == "" {
+			continue
+		}
+		// Skip lines that are numbered options, footer, or question text
+		if isNumberedOption(stripped) || isFooterLine(stripped) {
+			continue
+		}
+		// Tab header has 3+ spaces between segments and at least 2 segments
+		parts := splitTabSegments(stripped)
+		if len(parts) >= 2 {
+			return parts
+		}
+	}
+	return nil
+}
+
+// hasDialogPrefix returns true if the line starts with a dialog border
+// character (┃ or ›), indicating it is inside an OpenCode dialog box.
+func hasDialogPrefix(s string) bool {
+	return strings.HasPrefix(s, "┃") || strings.HasPrefix(s, "›")
+}
+
+// splitTabSegments splits a string on runs of 3+ whitespace characters.
+// Used to parse OpenCode tab header lines where tab names like
+// "Next steps   Aspire wt config   Confirm" are separated by multiple spaces.
+func splitTabSegments(s string) []string {
+	var segments []string
+	var current strings.Builder
+	spaceCount := 0
+	for _, ch := range s {
+		if ch == ' ' || ch == '\t' {
+			spaceCount++
+		} else {
+			if spaceCount >= 3 && current.Len() > 0 {
+				segments = append(segments, strings.TrimSpace(current.String()))
+				current.Reset()
+			} else if spaceCount > 0 {
+				current.WriteString(strings.Repeat(" ", spaceCount))
+			}
+			spaceCount = 0
+			current.WriteRune(ch)
+		}
+	}
+	if current.Len() > 0 {
+		segments = append(segments, strings.TrimSpace(current.String()))
+	}
+	return segments
 }
 
 // isFooterLine returns true if the line looks like a dialog footer (keyboard hints).
