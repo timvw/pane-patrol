@@ -1676,7 +1676,13 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		lines = m.renderTabBar(v, width, lines)
 	}
 
-	// Blocked: render agent-specific dialog representation
+	// Question dialogs: unified layout — question text + interactive options.
+	// Non-question dialogs: dialog preview + action buttons.
+	if isQuestionReason(v) {
+		return m.buildQuestionPanel(v, width, lines)
+	}
+
+	// Non-question blocked: render agent-specific dialog representation
 	lines = m.addPanelLines(lines, renderDialogContent(v, width, m.s))
 	lines = m.addPanelLine(lines, "", clickNone, -1) // blank separator
 
@@ -1720,17 +1726,146 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		}
 	}
 
-	// Show inline text input only when the action panel is focused:
-	// - For question dialogs with a custom answer option: always show when focused
-	// - For other panes: only show when explicitly editing via 't' key
-	// Never show when the list panel has focus.
-	if focused && (hasQuestionWithCustomAnswer(v) || m.editing) {
+	// Show inline text input when focused and editing via 't' key.
+	if focused && m.editing {
 		lines = m.addPanelLines(lines, m.renderInlineTextInput(width))
 	} else if focused {
 		lines = m.addPanelLine(lines, "", clickNone, -1)
 		hint := "  t = type custom response"
 		if hasTabNavigation(v) {
 			hint = "  tab/s-tab=tabs  t = type"
+		}
+		lines = m.addPanelLine(lines, m.s.dim.Render(hint), clickNone, -1)
+	}
+
+	return lines
+}
+
+// isQuestionReason returns true if the verdict represents a question dialog.
+func isQuestionReason(v *model.Verdict) bool {
+	return v != nil && v.Blocked && strings.Contains(v.Reason, "question")
+}
+
+// buildQuestionPanel renders a unified question dialog: question text with ┃
+// border, then interactive options (no separate dialog preview + action split).
+// Matches OpenCode's layout: question text, then numbered options with
+// descriptions, styled as clickable items.
+func (m *tuiModel) buildQuestionPanel(v *model.Verdict, width int, lines []string) []string {
+	focused := m.focus == panelActions
+	borderStyle := m.s.accentBorder
+	border := "┃ "
+	borderWidth := 2
+	contentWidth := width - borderWidth
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+
+	// Parse WaitingFor to separate question text from options.
+	questionText, parsedItems := parseChecklist(v.WaitingFor)
+
+	// Build a map from option label → description for enriching action buttons.
+	descMap := make(map[string]string)
+	for _, item := range parsedItems {
+		// Clean the label: strip "N. " prefix and checkbox prefix
+		label := item.label
+		if idx := strings.Index(label, ". "); idx >= 0 && idx <= 2 {
+			label = strings.TrimSpace(label[idx+2:])
+		}
+		// Strip checkbox prefix if present
+		label = strings.TrimPrefix(label, "[ ] ")
+		label = strings.TrimPrefix(label, "[✓] ")
+		if item.description != "" {
+			descMap[label] = item.description
+		}
+	}
+
+	// Question text with ┃ border (skip tab header lines — already shown in tab bar)
+	if questionText != "" {
+		lines = m.addPanelLine(lines, "", clickNone, -1)
+		for _, wl := range strings.Split(questionText, "\n") {
+			wl = strings.TrimSpace(wl)
+			if wl == "" || strings.HasPrefix(wl, "[tabs]") {
+				continue
+			}
+			for _, rl := range wrapText(wl, contentWidth) {
+				lines = m.addPanelLine(lines, borderStyle.Render(border)+m.s.text.Render(rl), clickNone, -1)
+			}
+		}
+	}
+	lines = m.addPanelLine(lines, "", clickNone, -1)
+
+	// Interactive options — clean format matching OpenCode: "N. Label"
+	actionIdx := 0
+	for i, a := range v.Actions {
+		if i >= 9 {
+			break
+		}
+		if a.Keys == "Tab" || a.Keys == "BTab" {
+			continue
+		}
+
+		// Dismiss/escape actions go at the end with different styling
+		isEscape := a.Keys == "Escape" || strings.Contains(strings.ToLower(a.Label), "dismiss")
+		if isEscape {
+			continue
+		}
+
+		num := fmt.Sprintf(" %d.", actionIdx+1)
+		labelText := " " + a.Label
+		combined := truncate(num+labelText, width)
+		if len(combined) > len(num) {
+			labelText = combined[len(num):]
+		}
+
+		if focused && i == m.actionCursor {
+			lines = m.addPanelLine(lines,
+				m.s.optionActive.Render(padRight(num, len([]rune(num))+1))+
+					m.s.optionBg.Render(padRight(labelText, width-len([]rune(num))-1)),
+				clickAction, i)
+		} else {
+			lines = m.addPanelLine(lines,
+				m.s.optionNumber.Render(num)+m.s.text.Render(labelText),
+				clickAction, i)
+		}
+
+		// Description from parsed checklist, indented under the option
+		if desc, ok := descMap[a.Label]; ok {
+			descLine := truncate("   "+desc, width)
+			lines = m.addPanelLine(lines, m.s.dim.Render(descLine), clickNone, -1)
+		}
+
+		actionIdx++
+	}
+
+	// Dismiss action at the bottom (dim, separate)
+	for i, a := range v.Actions {
+		isEscape := a.Keys == "Escape" || strings.Contains(strings.ToLower(a.Label), "dismiss")
+		if !isEscape {
+			continue
+		}
+		if a.Keys == "Tab" || a.Keys == "BTab" {
+			continue
+		}
+
+		lines = m.addPanelLine(lines, "", clickNone, -1)
+		label := truncate("  esc "+a.Label, width)
+		if focused && i == m.actionCursor {
+			lines = m.addPanelLine(lines,
+				m.s.optionBg.Render(padRight(label, width)),
+				clickAction, i)
+		} else {
+			lines = m.addPanelLine(lines, m.s.dim.Render(label), clickAction, i)
+		}
+	}
+
+	// Inline text input for custom answer or 't' key
+	if focused && (hasQuestionWithCustomAnswer(v) || m.editing) {
+		lines = m.addPanelLines(lines, m.renderInlineTextInput(width))
+	} else if focused {
+		lines = m.addPanelLine(lines, "", clickNone, -1)
+		hint := "  ↑↓ select  enter confirm  esc dismiss"
+		if hasTabNavigation(v) {
+			hint = "  ⇆ tab  ↑↓ select  enter confirm  esc dismiss"
 		}
 		lines = m.addPanelLine(lines, m.s.dim.Render(hint), clickNone, -1)
 	}
@@ -2535,7 +2670,7 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 	var nameCol, reasonCol string
 	if idx == m.cursor {
 		nameCol = m.s.selected.Render(padRight(
-			fmt.Sprintf("→ %s %s %s", arrow, sessionIcon(group), item.session), nameWidth))
+			fmt.Sprintf("  %s %s %s", arrow, sessionIcon(group), item.session), nameWidth))
 		reasonCol = m.s.selected.Render(padRight(reason, reasonWidth))
 	} else {
 		nameCol = padRight(fmt.Sprintf("  %s %s %s", arrow, icon, item.session), nameWidth)
@@ -2571,7 +2706,7 @@ func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int)
 	var nameCol, reasonCol string
 	if idx == m.cursor {
 		nameCol = m.s.selected.Render(padRight(
-			fmt.Sprintf("→     %s %s", iconText(v), paneLabel), nameWidth))
+			fmt.Sprintf("      %s %s", iconText(v), paneLabel), nameWidth))
 		reasonCol = m.s.selected.Render(padRight(reason, reasonWidth))
 	} else {
 		nameCol = padRight(fmt.Sprintf("      %s %s", icon, paneLabel), nameWidth)
