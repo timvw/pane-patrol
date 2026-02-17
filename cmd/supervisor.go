@@ -17,6 +17,7 @@ import (
 )
 
 var flagNoEmbed bool
+var flagTheme string
 
 var supervisorCmd = &cobra.Command{
 	Use:   "supervisor",
@@ -40,6 +41,8 @@ See the README for all configuration options.`,
 func init() {
 	supervisorCmd.Flags().BoolVar(&flagNoEmbed, "no-embed", false,
 		"Do not auto-embed in a tmux session (navigation will not work outside tmux)")
+	supervisorCmd.Flags().StringVar(&flagTheme, "theme", "dark",
+		"Color theme: dark, light")
 	rootCmd.AddCommand(supervisorCmd)
 }
 
@@ -123,6 +126,7 @@ func runSupervisor(cmd *cobra.Command) error {
 		RefreshInterval:  cfg.RefreshDuration,
 		AutoNudge:        cfg.AutoNudge,
 		AutoNudgeMaxRisk: cfg.AutoNudgeMaxRisk,
+		ThemeName:        flagTheme,
 	}
 
 	return tui.Run(ctx)

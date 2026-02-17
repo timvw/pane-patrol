@@ -14,38 +14,8 @@ import (
 	"github.com/timvw/pane-patrol/internal/model"
 )
 
-// Styles
-var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	headerStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
-	blockedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow
-	activeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	riskLowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	riskMedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	riskHighStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	statusStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-
-	// Agent-specific dialog border styles.
-	// OpenCode uses a thick "┃" left border in different colors:
-	//   - warning/yellow for permission dialogs
-	//   - accent/blue for question dialogs
-	//   - error/red for reject dialogs
-	warningBorderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")) // yellow — OpenCode permission
-	accentBorderStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12")) // blue — OpenCode question
-	errorBorderStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))  // red — OpenCode reject
-
-	// Claude Code uses a muted style for tool details.
-	claudeToolStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan — tool name
-	claudeDimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))  // dim — details
-
-	// Codex uses bold for titles and "$ " for commands.
-	codexTitleStyle   = lipgloss.NewStyle().Bold(true)
-	codexCommandStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green — commands
-	codexCursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")) // cyan — "›" cursor
-)
+// Styles are stored in tuiModel.s (built from the configurable Theme).
+// See theme.go for Theme struct and DarkTheme()/LightTheme() constructors.
 
 // panelClickKind describes what happens when an action panel row is clicked.
 type panelClickKind int
@@ -145,10 +115,14 @@ type TUI struct {
 	RefreshInterval  time.Duration // 0 disables auto-refresh
 	AutoNudge        bool          // Enable automatic nudging of blocked panes
 	AutoNudgeMaxRisk string        // Maximum risk level to auto-nudge: "low", "medium", "high"
+	ThemeName        string        // "dark" (default) or "light"
 }
 
 // model implements tea.Model
 type tuiModel struct {
+	theme Theme
+	s     styles // derived from theme
+
 	scanner         *Scanner
 	ctx             context.Context
 	refreshInterval time.Duration
@@ -189,6 +163,9 @@ type tuiModel struct {
 	panelClicks []panelClickInfo
 	tabZones    []tabClickZone // X-position zones for the tab bar row
 
+	// Mouse hover state
+	hoverPanelRow int // -1 = no hover; row index in panelClicks for highlight
+
 	// dimensions
 	width  int
 	height int
@@ -207,10 +184,16 @@ type tuiModel struct {
 }
 
 func (t *TUI) Run(ctx context.Context) error {
+	theme := ThemeByName(t.ThemeName)
+	s := newStyles(theme)
+
 	ti := textinput.New()
 	ti.Placeholder = "Type response and press Enter..."
 	ti.CharLimit = 2048
 	ti.Width = 80
+	ti.Cursor.Style = lipgloss.NewStyle().Foreground(theme.Primary)
+	ti.TextStyle = lipgloss.NewStyle().Foreground(theme.Text)
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(theme.TextMuted)
 
 	maxRisk := t.AutoNudgeMaxRisk
 	if maxRisk == "" {
@@ -218,6 +201,8 @@ func (t *TUI) Run(ctx context.Context) error {
 	}
 
 	m := &tuiModel{
+		theme:            theme,
+		s:                s,
 		scanner:          t.Scanner,
 		ctx:              ctx,
 		refreshInterval:  t.RefreshInterval,
@@ -234,6 +219,7 @@ func (t *TUI) Run(ctx context.Context) error {
 
 func (m *tuiModel) Init() tea.Cmd {
 	m.scanning = true
+	m.hoverPanelRow = -1
 	return m.doScan()
 }
 
@@ -819,6 +805,31 @@ func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.editing {
 		return m, nil
 	}
+
+	// Hover: move cursor to hovered item (like OpenCode's onMouseOver).
+	if msg.Action == tea.MouseActionMotion {
+		m.hoverPanelRow = -1
+		if m.actionPanelY > 0 && msg.Y >= m.actionPanelY {
+			// Hovering action panel
+			row := msg.Y - m.actionPanelY
+			if row >= 0 && row < len(m.panelClicks) {
+				info := m.panelClicks[row]
+				if info.kind == clickAction || info.kind == clickToggle {
+					m.hoverPanelRow = row
+					m.actionCursor = info.index
+					m.focus = panelActions
+				}
+			}
+		} else {
+			// Hovering list panel
+			idx := msg.Y - 1 + m.listStart
+			if idx >= 0 && idx < len(m.items) {
+				m.cursor = idx
+			}
+		}
+		return m, nil
+	}
+
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return m, nil
 	}
@@ -1118,14 +1129,15 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up", "k":
-		if m.actionCursor > 0 {
-			m.actionCursor--
+		count := m.selectedActionCount()
+		if count > 0 {
+			m.actionCursor = (m.actionCursor - 1 + count) % count
 		}
 
 	case "down", "j":
 		count := m.selectedActionCount()
-		if m.actionCursor < count-1 {
-			m.actionCursor++
+		if count > 0 {
+			m.actionCursor = (m.actionCursor + 1) % count
 		}
 
 	case "enter":
@@ -1184,16 +1196,16 @@ func (m *tuiModel) handleActionPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "tab":
-		// Tab key: advance to next tab in multi-tab forms.
+	case "tab", "l":
+		// Tab / l: advance to next tab in multi-tab forms.
 		v := m.selectedVerdict()
 		if v != nil && hasTabNavigation(v) {
 			return m, m.navigateTab("Tab")
 		}
 		return m, nil
 
-	case "shift+tab":
-		// Shift+Tab: go to previous tab in multi-tab forms.
+	case "shift+tab", "h":
+		// Shift+Tab / h: go to previous tab in multi-tab forms.
 		v := m.selectedVerdict()
 		if v != nil && hasTabNavigation(v) {
 			return m, m.navigateTab("BTab")
@@ -1364,25 +1376,25 @@ func (m *tuiModel) viewVerdictList() string {
 	var b strings.Builder
 
 	// Header: title + keybindings + token usage
-	b.WriteString(titleStyle.Render("Pane Supervisor"))
+	b.WriteString(m.s.title.Render("Pane Supervisor"))
 	b.WriteString("  ")
 	if m.focus == panelActions {
-		b.WriteString(dimStyle.Render("↑↓=select  enter=execute  space=toggle  t=type  tab/s-tab=tabs  ←/esc=back  q=quit"))
+		b.WriteString(m.styleHeaderHints("↑↓=select  enter=execute  space=toggle  t=type  tab/s-tab=tabs  ←/esc=back  q=quit"))
 	} else {
 		autoLabel := "a=auto:OFF"
 		if m.autoNudge {
 			autoLabel = fmt.Sprintf("a=auto:ON(%s)", m.autoNudgeMaxRisk)
 		}
 		filterLabel := fmt.Sprintf("f=%s", m.filter)
-		b.WriteString(dimStyle.Render(fmt.Sprintf("↑↓=nav  enter=jump  →/l=actions  1-9=quick  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
+		b.WriteString(m.styleHeaderHints(fmt.Sprintf("↑↓=nav  enter=jump  →/l=actions  1-9=quick  %s  %s  r=rescan  q=quit", filterLabel, autoLabel)))
 	}
 	if m.totalCacheHits > 0 {
 		b.WriteString("  ")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("eval cache: %d", m.totalCacheHits)))
+		b.WriteString(m.s.dim.Render(fmt.Sprintf("eval cache: %d", m.totalCacheHits)))
 	}
 	if m.scanning {
 		b.WriteString("  ")
-		b.WriteString(blockedStyle.Render("scanning..."))
+		b.WriteString(m.s.blocked.Render("scanning..."))
 	}
 	b.WriteString("\n")
 
@@ -1486,7 +1498,7 @@ func (m *tuiModel) viewVerdictList() string {
 	}
 
 	// Render list rows (2 columns: name | reason — no action column)
-	sep := headerStyle.Render(separator)
+	sep := m.s.header.Render(separator)
 	listRowsRendered := 0
 	for i := start; i < end && i < len(m.items); i++ {
 		item := m.items[i]
@@ -1512,7 +1524,7 @@ func (m *tuiModel) viewVerdictList() string {
 	}
 
 	// Separator between list and action panel
-	b.WriteString(dimStyle.Render(strings.Repeat("─", m.width)))
+	b.WriteString(m.s.header.Render(strings.Repeat("─", m.width)))
 	b.WriteString("\n")
 
 	// Store layout offsets for mouse hit testing
@@ -1536,16 +1548,16 @@ func (m *tuiModel) viewVerdictList() string {
 	if start > 0 || end < len(m.items) {
 		summary += fmt.Sprintf(" | showing %d-%d", start+1, end)
 	}
-	b.WriteString(dimStyle.Render(summary))
+	b.WriteString(m.s.dim.Render(summary))
 	b.WriteString("\n")
 
-	// Navigation hints (context-dependent)
-	b.WriteString(dimStyle.Render(m.buildHints()))
+	// Navigation hints (context-dependent) — already styled per-segment
+	b.WriteString(m.buildHints())
 	b.WriteString("\n")
 
 	// Status message
 	if m.message != "" {
-		b.WriteString(statusStyle.Render("  " + m.message))
+		b.WriteString(m.s.status.Render("  " + m.message))
 		b.WriteString("\n")
 	}
 
@@ -1560,7 +1572,7 @@ func (m *tuiModel) buildHints() string {
 		if v != nil && hasTabNavigation(v) {
 			hint += "  tab/s-tab tabs"
 		}
-		return hint
+		return m.styleHints(hint)
 	}
 	if m.focus == panelActions {
 		hint := "  ↑↓ navigate  enter execute  ←/esc back  t type"
@@ -1568,10 +1580,59 @@ func (m *tuiModel) buildHints() string {
 		if v != nil && hasTabNavigation(v) {
 			hint += "  tab/s-tab tabs"
 		}
-		return hint
+		return m.styleHints(hint)
 	}
 	// List panel
-	return "  ↑↓ navigate  enter jump  →/l actions  1-9 quick  r rescan  f filter  q quit"
+	return m.styleHints("  ↑↓ navigate  enter jump  →/l actions  1-9 quick  r rescan  f filter  q quit")
+}
+
+// styleHints renders a hint string with key symbols in text color and
+// descriptions in muted color. Hint format: "  key desc  key desc  ..."
+// Each pair is separated by double spaces; the key is the first word, desc is the second.
+func (m *tuiModel) styleHints(raw string) string {
+	// Split on double-space to get "key desc" pairs (first entry is empty from leading spaces)
+	pairs := strings.Split(raw, "  ")
+	var b strings.Builder
+	for _, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			b.WriteString("  ")
+			continue
+		}
+		// Split into key and description
+		parts := strings.SplitN(pair, " ", 2)
+		b.WriteString("  ")
+		b.WriteString(m.s.hintKey.Render(parts[0]))
+		if len(parts) > 1 {
+			b.WriteString(" ")
+			b.WriteString(m.s.hintDesc.Render(parts[1]))
+		}
+	}
+	return b.String()
+}
+
+// styleHeaderHints renders header hints with key=value format.
+// Keys (before =) are in text color, values (after =) in muted.
+// Pairs are separated by double spaces.
+func (m *tuiModel) styleHeaderHints(raw string) string {
+	pairs := strings.Split(raw, "  ")
+	var b strings.Builder
+	for i, pair := range pairs {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		if eqIdx := strings.Index(pair, "="); eqIdx >= 0 {
+			b.WriteString(m.s.hintKey.Render(pair[:eqIdx]))
+			b.WriteString(m.s.hintDesc.Render("=" + pair[eqIdx+1:]))
+		} else {
+			b.WriteString(m.s.hintDesc.Render(pair))
+		}
+	}
+	return b.String()
 }
 
 // buildActionPanel builds the lines for the right-hand action panel showing
@@ -1590,10 +1651,10 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 	var lines []string
 
 	// Target header
-	lines = m.addPanelLine(lines, dimStyle.Render(truncate(v.Target, width)), clickNone, -1)
+	lines = m.addPanelLine(lines, m.s.dim.Render(truncate(v.Target, width)), clickNone, -1)
 
 	if !v.Blocked {
-		lines = m.addPanelLine(lines, activeStyle.Render("Active"), clickNone, -1)
+		lines = m.addPanelLine(lines, m.s.active.Render("Active"), clickNone, -1)
 		if v.Reason != "" {
 			lines = m.addPanelLines(lines, wrapText(v.Reason, width))
 		}
@@ -1616,7 +1677,7 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 	}
 
 	// Blocked: render agent-specific dialog representation
-	lines = m.addPanelLines(lines, renderDialogContent(v, width))
+	lines = m.addPanelLines(lines, renderDialogContent(v, width, m.s))
 	lines = m.addPanelLine(lines, "", clickNone, -1) // blank separator
 
 	// Actions with number keys — highlight selected when panel is focused
@@ -1637,14 +1698,25 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 			rec = "*"
 		}
 
-		riskStr := riskLabel(a.Risk)
-		label := fmt.Sprintf(" %s[%d] '%s' %s (%s)", rec, i+1, a.Keys, a.Label, riskStr)
-		label = truncate(label, width)
+		riskStr := m.riskLabel(a.Risk)
+
+		// OpenCode layout: number separate from label, bg highlight for active.
+		num := fmt.Sprintf(" %s%d.", rec, i+1)
+		labelText := fmt.Sprintf(" %s %s (%s)", a.Keys, a.Label, riskStr)
+		combined := truncate(num+labelText, width)
+		if len(combined) > len(num) {
+			labelText = combined[len(num):]
+		}
 
 		if focused && i == m.actionCursor {
-			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+label[1:], width)), clickAction, i)
+			lines = m.addPanelLine(lines,
+				m.s.optionActive.Render(padRight(num, len([]rune(num))+1))+
+					m.s.optionBg.Render(padRight(labelText, width-len([]rune(num))-1)),
+				clickAction, i)
 		} else {
-			lines = m.addPanelLine(lines, label, clickAction, i)
+			lines = m.addPanelLine(lines,
+				m.s.optionNumber.Render(num)+m.s.text.Render(labelText),
+				clickAction, i)
 		}
 	}
 
@@ -1660,7 +1732,7 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 		if hasTabNavigation(v) {
 			hint = "  tab/s-tab=tabs  t = type"
 		}
-		lines = m.addPanelLine(lines, dimStyle.Render(hint), clickNone, -1)
+		lines = m.addPanelLine(lines, m.s.dim.Render(hint), clickNone, -1)
 	}
 
 	return lines
@@ -1673,14 +1745,14 @@ func (m *tuiModel) buildActionPanel(width int) []string {
 func (m *tuiModel) renderInlineTextInput(width int) []string {
 	var lines []string
 	lines = append(lines, "")
-	lines = append(lines, dimStyle.Render(truncate("  Type response:", width)))
+	lines = append(lines, m.s.inputLabel.Render(truncate("  Type response:", width)))
 
 	// Render the text input widget (includes cursor when focused)
 	inputView := m.textInput.View()
 	lines = append(lines, "  "+inputView)
 
 	if m.editing {
-		lines = append(lines, dimStyle.Render("  enter=submit  esc=cancel"))
+		lines = append(lines, m.s.dim.Render("  enter=submit  esc=cancel"))
 	}
 
 	return lines
@@ -1689,17 +1761,17 @@ func (m *tuiModel) renderInlineTextInput(width int) []string {
 // renderDialogContent produces agent-specific styled lines for the dialog
 // that the agent is blocked on. Dispatches based on v.Agent and v.Reason to
 // replicate the visual style of each agent's TUI dialogs.
-func renderDialogContent(v *model.Verdict, width int) []string {
+func renderDialogContent(v *model.Verdict, width int, s styles) []string {
 	if v.Agent == "opencode" {
-		return renderOpenCodeDialog(v, width)
+		return renderOpenCodeDialog(v, width, s)
 	}
 	if v.Agent == "claude_code" {
-		return renderClaudeCodeDialog(v, width)
+		return renderClaudeCodeDialog(v, width, s)
 	}
 	if v.Agent == "codex" {
-		return renderCodexDialog(v, width)
+		return renderCodexDialog(v, width, s)
 	}
-	return renderGenericDialog(v, width)
+	return renderGenericDialog(v, width, s)
 }
 
 // renderOpenCodeDialog renders OpenCode dialogs with the characteristic "┃"
@@ -1707,7 +1779,7 @@ func renderDialogContent(v *model.Verdict, width int) []string {
 //
 // Source: packages/opencode/src/cli/cmd/tui/component/border.tsx
 // SplitBorder uses "┃" (thick vertical) as left border.
-func renderOpenCodeDialog(v *model.Verdict, width int) []string {
+func renderOpenCodeDialog(v *model.Verdict, width int, s styles) []string {
 	var lines []string
 	border := "┃ "
 	borderWidth := 2
@@ -1716,18 +1788,18 @@ func renderOpenCodeDialog(v *model.Verdict, width int) []string {
 	var borderStyle lipgloss.Style
 	switch {
 	case strings.Contains(reason, "permission"):
-		borderStyle = warningBorderStyle
+		borderStyle = s.warningBorder
 		// Title line: △ Permission required
-		lines = append(lines, borderStyle.Render(border)+blockedStyle.Render("△ Permission required"))
+		lines = append(lines, borderStyle.Render(border)+s.blocked.Render("△ Permission required"))
 	case strings.Contains(reason, "reject"):
-		borderStyle = errorBorderStyle
-		lines = append(lines, borderStyle.Render(border)+errorStyle.Render("△ Reject permission"))
+		borderStyle = s.errorBorder
+		lines = append(lines, borderStyle.Render(border)+s.err.Render("△ Reject permission"))
 	case strings.Contains(reason, "question"):
-		borderStyle = accentBorderStyle
+		borderStyle = s.accentBorder
 		// No special title — question text comes from WaitingFor
 	default:
 		// Idle or other — use dim border
-		borderStyle = dimStyle
+		borderStyle = s.dim
 	}
 
 	// Render WaitingFor content with the colored border prefix
@@ -1751,13 +1823,13 @@ func renderOpenCodeDialog(v *model.Verdict, width int) []string {
 	}
 	for _, wl := range strings.Split(content, "\n") {
 		for _, rl := range wrapText(wl, contentWidth) {
-			lines = append(lines, borderStyle.Render(border)+rl)
+			lines = append(lines, borderStyle.Render(border)+s.text.Render(rl))
 		}
 	}
 
 	// Show the one-line reason as context below the dialog
 	if v.WaitingFor != "" && v.Reason != "" {
-		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+		lines = append(lines, s.dim.Render(truncate(v.Reason, width)))
 	}
 
 	return lines
@@ -1770,19 +1842,19 @@ func renderOpenCodeDialog(v *model.Verdict, width int) []string {
 // Source: binary analysis of /opt/homebrew/Caskroom/claude-code/*/claude
 // Permission dialog: "Claude needs your permission to use {tool}"
 // Edit approval: "Do you want to make this edit to {filename}?"
-func renderClaudeCodeDialog(v *model.Verdict, width int) []string {
+func renderClaudeCodeDialog(v *model.Verdict, width int, s styles) []string {
 	var lines []string
 
 	reason := strings.ToLower(v.Reason)
 	switch {
 	case strings.Contains(reason, "permission"):
-		lines = append(lines, claudeToolStyle.Render("Permission required"))
+		lines = append(lines, s.claudeTool.Render("Permission required"))
 	case strings.Contains(reason, "edit"):
-		lines = append(lines, claudeToolStyle.Render("Edit approval"))
+		lines = append(lines, s.claudeTool.Render("Edit approval"))
 	case strings.Contains(reason, "idle"):
-		lines = append(lines, claudeDimStyle.Render("Idle at prompt"))
+		lines = append(lines, s.claudeDim.Render("Idle at prompt"))
 	default:
-		lines = append(lines, claudeToolStyle.Render("Waiting"))
+		lines = append(lines, s.claudeTool.Render("Waiting"))
 	}
 
 	// Render WaitingFor content — Claude Code dialog details
@@ -1795,7 +1867,7 @@ func renderClaudeCodeDialog(v *model.Verdict, width int) []string {
 		// Highlight command lines (start with "$")
 		if strings.HasPrefix(trimmed, "$ ") {
 			for _, rl := range wrapText(wl, width) {
-				lines = append(lines, codexCommandStyle.Render(rl))
+				lines = append(lines, s.codexCommand.Render(rl))
 			}
 		} else {
 			lines = append(lines, wrapText(wl, width)...)
@@ -1804,7 +1876,7 @@ func renderClaudeCodeDialog(v *model.Verdict, width int) []string {
 
 	// Show reason as context
 	if v.WaitingFor != "" && v.Reason != "" {
-		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+		lines = append(lines, s.dim.Render(truncate(v.Reason, width)))
 	}
 
 	return lines
@@ -1816,27 +1888,27 @@ func renderClaudeCodeDialog(v *model.Verdict, width int) []string {
 // Source: codex-rs/tui/src/bottom_pane/approval_overlay.rs
 // Title in bold, "$ command" prefix, "Reason: " prefix in italic,
 // "›" selection cursor on options.
-func renderCodexDialog(v *model.Verdict, width int) []string {
+func renderCodexDialog(v *model.Verdict, width int, s styles) []string {
 	var lines []string
 
 	reason := strings.ToLower(v.Reason)
 	switch {
 	case strings.Contains(reason, "command approval"):
-		lines = append(lines, codexTitleStyle.Render("Command approval"))
+		lines = append(lines, s.codexTitle.Render("Command approval"))
 	case strings.Contains(reason, "edit approval"):
-		lines = append(lines, codexTitleStyle.Render("Edit approval"))
+		lines = append(lines, s.codexTitle.Render("Edit approval"))
 	case strings.Contains(reason, "network"):
-		lines = append(lines, codexTitleStyle.Render("Network access"))
+		lines = append(lines, s.codexTitle.Render("Network access"))
 	case strings.Contains(reason, "mcp"):
-		lines = append(lines, codexTitleStyle.Render("MCP approval"))
+		lines = append(lines, s.codexTitle.Render("MCP approval"))
 	case strings.Contains(reason, "question"):
-		lines = append(lines, codexTitleStyle.Render("Question"))
+		lines = append(lines, s.codexTitle.Render("Question"))
 	case strings.Contains(reason, "user input"):
-		lines = append(lines, codexTitleStyle.Render("User input requested"))
+		lines = append(lines, s.codexTitle.Render("User input requested"))
 	case strings.Contains(reason, "idle"):
-		lines = append(lines, dimStyle.Render("Idle at prompt"))
+		lines = append(lines, s.dim.Render("Idle at prompt"))
 	default:
-		lines = append(lines, codexTitleStyle.Render("Waiting"))
+		lines = append(lines, s.codexTitle.Render("Waiting"))
 	}
 
 	// Render WaitingFor content with Codex styling
@@ -1850,12 +1922,12 @@ func renderCodexDialog(v *model.Verdict, width int) []string {
 		case strings.HasPrefix(trimmed, "$ "):
 			// Command with $ prefix in green
 			for _, rl := range wrapText(wl, width) {
-				lines = append(lines, codexCommandStyle.Render(rl))
+				lines = append(lines, s.codexCommand.Render(rl))
 			}
 		case strings.HasPrefix(trimmed, "› ") || strings.HasPrefix(trimmed, "›"):
 			// Selection cursor in cyan
 			for _, rl := range wrapText(wl, width) {
-				lines = append(lines, codexCursorStyle.Render(rl))
+				lines = append(lines, s.codexCursor.Render(rl))
 			}
 		default:
 			lines = append(lines, wrapText(wl, width)...)
@@ -1864,7 +1936,7 @@ func renderCodexDialog(v *model.Verdict, width int) []string {
 
 	// Show reason as context
 	if v.WaitingFor != "" && v.Reason != "" {
-		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+		lines = append(lines, s.dim.Render(truncate(v.Reason, width)))
 	}
 
 	return lines
@@ -1872,21 +1944,21 @@ func renderCodexDialog(v *model.Verdict, width int) []string {
 
 // renderGenericDialog renders a generic blocked dialog for unknown agents.
 // Falls back to the previous behavior: WaitingFor in yellow, reason in dim.
-func renderGenericDialog(v *model.Verdict, width int) []string {
+func renderGenericDialog(v *model.Verdict, width int, s styles) []string {
 	var lines []string
 	if v.WaitingFor != "" {
 		for _, wl := range strings.Split(v.WaitingFor, "\n") {
 			for _, rl := range wrapText(wl, width) {
-				lines = append(lines, blockedStyle.Render(rl))
+				lines = append(lines, s.blocked.Render(rl))
 			}
 		}
 	} else if v.Reason != "" {
 		for _, rl := range wrapText(v.Reason, width) {
-			lines = append(lines, blockedStyle.Render(rl))
+			lines = append(lines, s.blocked.Render(rl))
 		}
 	}
 	if v.WaitingFor != "" && v.Reason != "" {
-		lines = append(lines, dimStyle.Render(truncate(v.Reason, width)))
+		lines = append(lines, s.dim.Render(truncate(v.Reason, width)))
 	}
 	return lines
 }
@@ -2028,9 +2100,15 @@ func (m *tuiModel) renderTabBar(v *model.Verdict, width int, lines []string) []s
 		})
 
 		if i == activeTab {
-			bar.WriteString(selectedStyle.Render(tabText))
+			bar.WriteString(m.s.activeTab.Render(tabText))
 		} else {
-			bar.WriteString(dimStyle.Render(tabText))
+			// Tabs before the active tab are "answered"; tabs after are "pending".
+			// On the confirm tab (last), all previous tabs are answered.
+			if i < activeTab || isConfirmTab(v) {
+				bar.WriteString(m.s.answeredTab.Render(tabText))
+			} else {
+				bar.WriteString(m.s.pendingTab.Render(tabText))
+			}
 		}
 		xPos += tabWidth
 	}
@@ -2047,7 +2125,7 @@ func (m *tuiModel) renderTabBar(v *model.Verdict, width int, lines []string) []s
 // Shows tab bar, review summary content, and Submit/Dismiss actions.
 func (m *tuiModel) buildConfirmTabPanel(v *model.Verdict, width int, lines []string) []string {
 	focused := m.focus == panelActions
-	borderStyle := accentBorderStyle
+	borderStyle := m.s.accentBorder
 	border := "┃ "
 	borderWidth := 2
 	contentWidth := width - borderWidth
@@ -2071,8 +2149,16 @@ func (m *tuiModel) buildConfirmTabPanel(v *model.Verdict, width int, lines []str
 			continue // skip tab header line
 		}
 		if inReview && trimmed != "" {
+			// Style review content: "(not answered)" in error red,
+			// labels ending with ":" in muted, values in text color.
 			for _, rl := range wrapText(trimmed, contentWidth) {
-				lines = m.addPanelLine(lines, borderStyle.Render(border)+rl, clickNone, -1)
+				if strings.Contains(rl, "(not answered)") {
+					lines = m.addPanelLine(lines, borderStyle.Render(border)+m.s.reviewUnanswered.Render(rl), clickNone, -1)
+				} else if strings.HasSuffix(strings.TrimSpace(rl), ":") {
+					lines = m.addPanelLine(lines, borderStyle.Render(border)+m.s.reviewLabel.Render(rl), clickNone, -1)
+				} else {
+					lines = m.addPanelLine(lines, borderStyle.Render(border)+m.s.reviewValue.Render(rl), clickNone, -1)
+				}
 			}
 		}
 	}
@@ -2094,20 +2180,30 @@ func (m *tuiModel) buildConfirmTabPanel(v *model.Verdict, width int, lines []str
 			rec = "*"
 		}
 
-		riskStr := riskLabel(a.Risk)
-		label := fmt.Sprintf(" %s[%s] %s (%s)", rec, a.Keys, a.Label, riskStr)
-		label = truncate(label, width)
+		riskStr := m.riskLabel(a.Risk)
+
+		num := fmt.Sprintf(" %s%s.", rec, a.Keys)
+		labelText := fmt.Sprintf(" %s (%s)", a.Label, riskStr)
+		combined := truncate(num+labelText, width)
+		if len(combined) > len(num) {
+			labelText = combined[len(num):]
+		}
 
 		if focused && i == m.actionCursor {
-			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+label[1:], width)), clickAction, i)
+			lines = m.addPanelLine(lines,
+				m.s.optionActive.Render(padRight(num, len([]rune(num))+1))+
+					m.s.optionBg.Render(padRight(labelText, width-len([]rune(num))-1)),
+				clickAction, i)
 		} else {
-			lines = m.addPanelLine(lines, label, clickAction, i)
+			lines = m.addPanelLine(lines,
+				m.s.optionNumber.Render(num)+m.s.text.Render(labelText),
+				clickAction, i)
 		}
 	}
 
 	if focused {
 		lines = m.addPanelLine(lines, "", clickNone, -1)
-		lines = m.addPanelLine(lines, dimStyle.Render("  enter=submit all  tab/s-tab=tabs  esc=dismiss"), clickNone, -1)
+		lines = m.addPanelLine(lines, m.s.dim.Render("  enter=submit all  tab/s-tab=tabs  esc=dismiss"), clickNone, -1)
 	}
 
 	return lines
@@ -2205,7 +2301,7 @@ func parseChecklist(waitingFor string) (questionText string, items []checklistIt
 // All toggles are buffered locally — nothing is sent to the pane until Submit.
 func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []string) []string {
 	focused := m.focus == panelActions
-	borderStyle := accentBorderStyle
+	borderStyle := m.s.accentBorder
 	border := "┃ "
 	borderWidth := 2
 	contentWidth := width - borderWidth
@@ -2237,10 +2333,10 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		}
 	}
 
-	// Question text with blue border
+	// Question text with purple border, text in primary text color
 	if questionText != "" {
 		for _, wl := range wrapText(questionText, contentWidth) {
-			lines = m.addPanelLine(lines, borderStyle.Render(border)+wl, clickNone, -1)
+			lines = m.addPanelLine(lines, borderStyle.Render(border)+m.s.text.Render(wl), clickNone, -1)
 		}
 	}
 	lines = m.addPanelLine(lines, "", clickNone, -1)
@@ -2263,14 +2359,6 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 			checked = m.localChecks[i]
 		}
 
-		// Checkbox indicator
-		checkbox := "[ ]"
-		checkStyle := dimStyle
-		if checked {
-			checkbox = "[✓]"
-			checkStyle = activeStyle
-		}
-
 		optLabel := item.label
 		// Strip the "N. [ ] " or "N. [✓] " prefix for clean display
 		if idx := strings.Index(optLabel, "] "); idx >= 0 {
@@ -2281,21 +2369,42 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		}
 		optLabel = strings.TrimSpace(optLabel)
 
-		line := fmt.Sprintf(" %s %d. %s", checkbox, i+1, optLabel)
-		line = truncate(line, width)
-
-		if focused && m.actionCursor == i {
-			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+line[1:], width)), clickToggle, i)
-		} else {
-			// line = " [ ] 1. label" — style the leading " [ ]" (4 chars), then append the rest unstyled.
-			lines = m.addPanelLine(lines, checkStyle.Render(line[:4])+line[4:], clickToggle, i)
+		// OpenCode layout: "{number}. [{check}] {label}"
+		// Number styled separately; checkbox+label as one unit.
+		check := "[ ]"
+		if checked {
+			check = "[✓]"
+		}
+		num := fmt.Sprintf(" %d.", i+1)
+		labelText := fmt.Sprintf(" %s %s", check, optLabel)
+		combined := truncate(num+labelText, width)
+		if len(combined) > len(num) {
+			labelText = combined[len(num):]
 		}
 
-		// Description in dim, indented
+		if focused && m.actionCursor == i {
+			// Active: tinted number + blue label, both on dark bg
+			lines = m.addPanelLine(lines,
+				m.s.optionActive.Render(padRight(num, len([]rune(num))+1))+
+					m.s.optionBg.Render(padRight(labelText, width-len([]rune(num))-1)),
+				clickToggle, i)
+		} else if checked {
+			// Picked: muted number, green checkbox+label
+			lines = m.addPanelLine(lines,
+				m.s.optionNumber.Render(num)+m.s.optionPicked.Render(labelText),
+				clickToggle, i)
+		} else {
+			// Normal: muted number, white checkbox+label
+			lines = m.addPanelLine(lines,
+				m.s.optionNumber.Render(num)+m.s.text.Render(labelText),
+				clickToggle, i)
+		}
+
+		// Description in muted, indented under the label
 		if item.description != "" && !isCustomOpt {
-			desc := "      " + item.description
+			desc := "   " + item.description
 			desc = truncate(desc, width)
-			lines = m.addPanelLine(lines, dimStyle.Render(desc), clickNone, -1)
+			lines = m.addPanelLine(lines, m.s.dim.Render(desc), clickNone, -1)
 		}
 
 		// Render the generic text input under the custom answer option
@@ -2328,13 +2437,23 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		if i == v.Recommended {
 			rec = "*"
 		}
-		label := fmt.Sprintf(" %s[%s] %s", rec, a.Keys, a.Label)
-		label = truncate(label, width)
+
+		num := fmt.Sprintf(" %s%s.", rec, a.Keys)
+		labelText := " " + a.Label
+		combined := truncate(num+labelText, width)
+		if len(combined) > len(num) {
+			labelText = combined[len(num):]
+		}
 
 		if focused && m.actionCursor == i {
-			lines = m.addPanelLine(lines, selectedStyle.Render(padRight("→"+label[1:], width)), clickAction, i)
+			lines = m.addPanelLine(lines,
+				m.s.optionActive.Render(padRight(num, len([]rune(num))+1))+
+					m.s.optionBg.Render(padRight(labelText, width-len([]rune(num))-1)),
+				clickAction, i)
 		} else {
-			lines = m.addPanelLine(lines, label, clickAction, i)
+			lines = m.addPanelLine(lines,
+				m.s.optionNumber.Render(num)+m.s.text.Render(labelText),
+				clickAction, i)
 		}
 	}
 
@@ -2368,7 +2487,7 @@ func (m *tuiModel) buildMultiSelectPanel(v *model.Verdict, width int, lines []st
 		if pendingChanges > 0 {
 			hint += fmt.Sprintf("  (%d pending)", pendingChanges)
 		}
-		lines = m.addPanelLine(lines, dimStyle.Render(hint), clickNone, -1)
+		lines = m.addPanelLine(lines, m.s.dim.Render(hint), clickNone, -1)
 	}
 
 	return lines
@@ -2385,12 +2504,12 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 	}
 
 	// Session icon: worst status across panes
-	icon := dimStyle.Render("·")
+	icon := m.s.dim.Render("·")
 	if group != nil {
 		if group.blocked > 0 {
-			icon = blockedStyle.Render("⚠")
+			icon = m.s.blocked.Render("⚠")
 		} else if group.active > 0 {
-			icon = activeStyle.Render("✓")
+			icon = m.s.active.Render("✓")
 		}
 	}
 
@@ -2415,12 +2534,12 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 
 	var nameCol, reasonCol string
 	if idx == m.cursor {
-		nameCol = selectedStyle.Render(padRight(
+		nameCol = m.s.selected.Render(padRight(
 			fmt.Sprintf("→ %s %s %s", arrow, sessionIcon(group), item.session), nameWidth))
-		reasonCol = selectedStyle.Render(padRight(reason, reasonWidth))
+		reasonCol = m.s.selected.Render(padRight(reason, reasonWidth))
 	} else {
 		nameCol = padRight(fmt.Sprintf("  %s %s %s", arrow, icon, item.session), nameWidth)
-		reasonCol = dimStyle.Render(padRight(reason, reasonWidth))
+		reasonCol = m.s.dim.Render(padRight(reason, reasonWidth))
 	}
 
 	return nameCol, reasonCol
@@ -2429,15 +2548,15 @@ func (m *tuiModel) renderSessionRow(item listItem, idx, nameWidth, reasonWidth i
 func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int) (string, string) {
 	v := m.verdicts[item.paneIdx]
 
-	icon := activeStyle.Render("✓")
+	icon := m.s.active.Render("✓")
 	if v.Blocked {
-		icon = blockedStyle.Render("⚠")
+		icon = m.s.blocked.Render("⚠")
 	}
 	if v.Agent == "error" {
-		icon = errorStyle.Render("✗")
+		icon = m.s.err.Render("✗")
 	}
 	if v.Agent == "not_an_agent" {
-		icon = dimStyle.Render("·")
+		icon = m.s.dim.Render("·")
 	}
 
 	// Show pane target (e.g. ":0.1") indented under the session
@@ -2451,9 +2570,9 @@ func (m *tuiModel) renderPaneRow(item listItem, idx, nameWidth, reasonWidth int)
 
 	var nameCol, reasonCol string
 	if idx == m.cursor {
-		nameCol = selectedStyle.Render(padRight(
+		nameCol = m.s.selected.Render(padRight(
 			fmt.Sprintf("→     %s %s", iconText(v), paneLabel), nameWidth))
-		reasonCol = selectedStyle.Render(padRight(reason, reasonWidth))
+		reasonCol = m.s.selected.Render(padRight(reason, reasonWidth))
 	} else {
 		nameCol = padRight(fmt.Sprintf("      %s %s", icon, paneLabel), nameWidth)
 		reasonCol = padRight(reason, reasonWidth)
@@ -2572,14 +2691,14 @@ func (m *tuiModel) autoNudgeCmd() tea.Cmd {
 }
 
 // riskLabel returns a styled risk string.
-func riskLabel(risk string) string {
+func (m *tuiModel) riskLabel(risk string) string {
 	switch risk {
 	case "low":
-		return riskLowStyle.Render("low")
+		return m.s.riskLow.Render("low")
 	case "medium":
-		return riskMedStyle.Render("med")
+		return m.s.riskMed.Render("med")
 	case "high":
-		return riskHighStyle.Render("HIGH")
+		return m.s.riskHigh.Render("HIGH")
 	default:
 		return risk
 	}
