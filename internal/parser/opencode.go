@@ -38,18 +38,6 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 	// idle prompt, any dialog text or active indicators above it are stale
 	// (from a prior turn or the agent's own output) and should be ignored.
 	if p.isIdleAtBottom(content) {
-		if subs := findSubagents(processTree); len(subs) > 0 {
-			return &Result{
-				Agent:     "opencode",
-				Blocked:   false,
-				Reason:    "subagent active",
-				Reasoning: "deterministic parser: OpenCode TUI idle at bottom, but process tree contains active subagent(s)",
-				Subagents: subs,
-				Actions: []model.Action{
-					{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
-				},
-			}
-		}
 		return &Result{
 			Agent:      "opencode",
 			Blocked:    true,
@@ -80,20 +68,6 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 			Blocked:   false,
 			Reason:    "actively executing",
 			Reasoning: "deterministic parser: detected active execution indicators (spinner, Build/Plan, progress bar)",
-		}
-	}
-
-	// Before falling through to idle, check for subagent processes.
-	if subs := findSubagents(processTree); len(subs) > 0 {
-		return &Result{
-			Agent:     "opencode",
-			Blocked:   false,
-			Reason:    "subagent active",
-			Reasoning: "deterministic parser: OpenCode TUI detected, no active execution indicators, but process tree contains active subagent(s)",
-			Subagents: subs,
-			Actions: []model.Action{
-				{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
-			},
 		}
 	}
 
@@ -501,43 +475,6 @@ func (p *OpenCodeParser) parseConfirmTab(lines []string, content string) *Result
 		Recommended: 0, // recommend Enter (submit)
 		Reasoning:   "deterministic parser: OpenCode question Confirm tab detected (⇆ tab footer + Review)",
 	}
-}
-
-// findSubagents scans the process tree for OpenCode subagent processes.
-//
-// OpenCode's Task tool dispatches subagents as child processes with the
-// pattern: opencode -s ses_<session_id>
-//
-// Source: packages/opencode/src/cli/cmd/root.ts (the -s / --session flag)
-//
-// Each process tree entry is an indented command-line string from ps.
-// Returns nil if no subagents are found.
-func findSubagents(processTree []string) []model.SubagentInfo {
-	var subagents []model.SubagentInfo
-	for _, proc := range processTree {
-		trimmed := strings.TrimSpace(proc)
-		lower := strings.ToLower(trimmed)
-		if !strings.Contains(lower, "opencode") {
-			continue
-		}
-		// Look for session flag: -s ses_xxx or --session ses_xxx
-		fields := strings.Fields(trimmed)
-		for i, f := range fields {
-			if strings.HasPrefix(f, "ses_") {
-				subagents = append(subagents, model.SubagentInfo{
-					SessionID: f,
-				})
-				break
-			}
-			if (f == "-s" || f == "--session") && i+1 < len(fields) && strings.HasPrefix(fields[i+1], "ses_") {
-				subagents = append(subagents, model.SubagentInfo{
-					SessionID: fields[i+1],
-				})
-				break
-			}
-		}
-	}
-	return subagents
 }
 
 // extractBlock extracts a contextual block of text around a marker line.
