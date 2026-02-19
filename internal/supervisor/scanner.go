@@ -207,6 +207,7 @@ func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Ver
 			v.Reasoning = parsed.Reasoning
 			v.Actions = parsed.Actions
 			v.Recommended = parsed.Recommended
+			v.Subagents = parsed.Subagents
 			v.EvalSource = model.EvalSourceParser
 			verdict := &v
 

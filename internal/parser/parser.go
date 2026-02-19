@@ -25,6 +25,7 @@ type Result struct {
 	Actions     []model.Action
 	Recommended int
 	Reasoning   string
+	Subagents   []model.SubagentInfo
 }
 
 // AgentParser recognizes a specific agent's TUI output and produces a

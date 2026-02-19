@@ -63,6 +63,9 @@ type Verdict struct {
 	Actions []Action `json:"actions,omitempty"`
 	// Recommended is the 0-based index into Actions for the recommended action.
 	Recommended int `json:"recommended"`
+	// Subagents lists detected subagent child processes.
+	// Populated by deterministic parsers when a parent agent has active subagents.
+	Subagents []SubagentInfo `json:"subagents,omitempty"`
 
 	// Content is the raw pane capture. Only populated when verbose mode is enabled.
 	Content string `json:"content,omitempty"`
@@ -89,6 +92,13 @@ type Action struct {
 	// appended). Use this for TUIs that run in raw mode and process each
 	// keypress individually (e.g., Claude Code, OpenCode, Codex).
 	Raw bool `json:"raw,omitempty"`
+}
+
+// SubagentInfo describes a detected subagent child process.
+type SubagentInfo struct {
+	// SessionID is the subagent session identifier (e.g., "ses_abc123").
+	// May be empty for agents that don't expose session IDs.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // BaseVerdict returns a Verdict pre-filled with common pane identity and

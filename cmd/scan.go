@@ -138,6 +138,7 @@ func evaluatePane(ctx context.Context, m mux.Multiplexer, registry *parser.Regis
 		v.Reasoning = parsed.Reasoning
 		v.Actions = parsed.Actions
 		v.Recommended = parsed.Recommended
+		v.Subagents = parsed.Subagents
 		v.EvalSource = model.EvalSourceParser
 		verdict := &v
 		if flagVerbose {
