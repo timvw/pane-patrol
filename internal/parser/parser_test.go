@@ -1887,3 +1887,115 @@ func TestOpenCode_SingleQuestionNoTabs(t *testing.T) {
 		t.Errorf("single question should not have [tabs] in WaitingFor, got: %q", result.WaitingFor)
 	}
 }
+
+// --- OpenCode Subagent Detection Tests ---
+
+func TestOpenCode_SubagentInProcessTree_NotIdle(t *testing.T) {
+	// Parent TUI shows idle prompt, but process tree has a subagent child.
+	// Should be classified as working (subagent active), NOT idle.
+	content := `
+  some previous output...
+
+  > 
+`
+	processTree := []string{
+		"opencode --provider anthropic",
+		"  opencode -s ses_abc123def456",
+	}
+	p := &OpenCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Agent != "opencode" {
+		t.Errorf("agent: got %q, want %q", result.Agent, "opencode")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false when subagent is active")
+	}
+	if !strings.Contains(result.Reason, "subagent") {
+		t.Errorf("reason should mention subagent, got %q", result.Reason)
+	}
+	if len(result.Subagents) == 0 {
+		t.Fatal("expected at least one subagent in result")
+	}
+	if result.Subagents[0].SessionID != "ses_abc123def456" {
+		t.Errorf("session_id: got %q, want %q", result.Subagents[0].SessionID, "ses_abc123def456")
+	}
+}
+
+func TestOpenCode_NoSubagent_StillIdle(t *testing.T) {
+	// Parent TUI shows idle prompt, process tree has no subagent.
+	// Should remain idle at prompt (unchanged behavior).
+	content := `
+  some previous output...
+
+  > 
+`
+	processTree := []string{
+		"opencode --provider anthropic",
+	}
+	p := &OpenCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true when no subagent and idle prompt")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "idle at prompt")
+	}
+}
+
+func TestOpenCode_ActiveTUI_WithSubagent_TUIPrecedence(t *testing.T) {
+	// Parent TUI shows active execution indicators AND has subagent.
+	// TUI indicators take precedence (actively executing, no subagent info needed).
+	content := `
+  ▣ Build · claude-sonnet-4-5 · 12s
+
+  ■■■⬝⬝⬝⬝⬝
+
+  esc interrupt
+`
+	processTree := []string{
+		"opencode --provider anthropic",
+		"  opencode -s ses_xyz789",
+	}
+	p := &OpenCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false for active execution")
+	}
+	if result.Reason != "actively executing" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "actively executing")
+	}
+}
+
+func TestOpenCode_SubagentDefaultFallthrough(t *testing.T) {
+	// OpenCode TUI detected but no idle prompt and no active indicators.
+	// Process tree has subagent. Should detect as working via subagent.
+	content := `
+  some output from the agent
+  more output lines here
+  Task dispatched
+`
+	processTree := []string{
+		"opencode --provider anthropic",
+		"  opencode -s ses_task42session",
+	}
+	p := &OpenCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false when subagent is active")
+	}
+	if !strings.Contains(result.Reason, "subagent") {
+		t.Errorf("reason should mention subagent, got %q", result.Reason)
+	}
+}
