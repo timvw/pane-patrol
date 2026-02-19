@@ -63,8 +63,8 @@ type Verdict struct {
 	Actions []Action `json:"actions,omitempty"`
 	// Recommended is the 0-based index into Actions for the recommended action.
 	Recommended int `json:"recommended"`
-	// Subagents lists detected subagent child processes.
-	// Populated by deterministic parsers when a parent agent has active subagents.
+	// Subagents lists detected subagent tasks parsed from TUI content.
+	// Populated by deterministic parsers when a running Task block is visible.
 	Subagents []SubagentInfo `json:"subagents,omitempty"`
 
 	// Content is the raw pane capture. Only populated when verbose mode is enabled.
@@ -94,11 +94,22 @@ type Action struct {
 	Raw bool `json:"raw,omitempty"`
 }
 
-// SubagentInfo describes a detected subagent child process.
+// SubagentInfo describes a detected subagent task parsed from TUI content.
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/index.tsx
+// Task component renders: spinner + "{AgentType} Task", "{description} ({N} toolcalls)",
+// "└ {ToolName} {title}", and "view subagents" keybind hint.
 type SubagentInfo struct {
-	// SessionID is the subagent session identifier (e.g., "ses_abc123").
-	// May be empty for agents that don't expose session IDs.
-	SessionID string `json:"session_id,omitempty"`
+	// AgentType is the subagent type (e.g., "General", "Explore").
+	// Extracted from the Task block title "{AgentType} Task".
+	AgentType string `json:"agent_type,omitempty"`
+	// Description is the task description (e.g., "implement the feature").
+	Description string `json:"description,omitempty"`
+	// ToolCalls is the number of tool calls made by the subagent.
+	ToolCalls int `json:"tool_calls"`
+	// CurrentTool is the tool currently being executed (e.g., "Bash npm test").
+	// Extracted from the "└ {ToolName} {title}" line.
+	CurrentTool string `json:"current_tool,omitempty"`
 }
 
 // BaseVerdict returns a Verdict pre-filled with common pane identity and

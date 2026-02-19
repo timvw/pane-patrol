@@ -1862,6 +1862,209 @@ func TestOpenCode_ConfirmTab(t *testing.T) {
 	}
 }
 
+// --- OpenCode Subagent Task Tests ---
+//
+// These tests verify detection of active subagent (Task tool) execution.
+// When a subagent Task is running, the TUI shows:
+//   - BlockTool with braille spinner + "General Task" (or similar) title
+//   - "{description} ({N} toolcalls)" below the title
+//   - "└ {ToolName} {title}" for the current tool
+//   - "{keybind} view subagents" text
+//   - Status bar: "esc interrupt" (prompt area, not "> ")
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/index.tsx
+//   Task component (line 1852), BlockTool (line 1602), Spinner (spinner.tsx:8)
+
+func TestOpenCode_SubagentTask_ActiveWithSpinner(t *testing.T) {
+	// Simulates a running subagent Task as captured by tmux capture-pane -p -J.
+	// The braille spinner and "esc interrupt" should be detected as active execution.
+	// SubagentInfo should be populated from the Task block content.
+	content := `
+  Previous conversation output...
+
+  ⠹ General Task
+  implement the feature (3 toolcalls)
+  └ Bash npm test
+
+  ctrl+j view subagents
+
+  esc interrupt
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: subagent Task with braille spinner is actively executing")
+	}
+	// SubagentInfo should be populated
+	if len(result.Subagents) != 1 {
+		t.Fatalf("expected 1 subagent, got %d", len(result.Subagents))
+	}
+	sub := result.Subagents[0]
+	if sub.AgentType != "General" {
+		t.Errorf("agent_type: got %q, want %q", sub.AgentType, "General")
+	}
+	if sub.Description != "implement the feature" {
+		t.Errorf("description: got %q, want %q", sub.Description, "implement the feature")
+	}
+	if sub.ToolCalls != 3 {
+		t.Errorf("tool_calls: got %d, want %d", sub.ToolCalls, 3)
+	}
+	if sub.CurrentTool != "Bash npm test" {
+		t.Errorf("current_tool: got %q, want %q", sub.CurrentTool, "Bash npm test")
+	}
+}
+
+func TestOpenCode_SubagentTask_EarlyPhaseZeroToolcalls(t *testing.T) {
+	// Early phase of subagent dispatch: Task is running but has 0 toolcalls yet.
+	// The (0 toolcalls) exclusion in isActiveExecution should NOT prevent
+	// detection when other active indicators (spinner, esc interrupt) are present.
+	content := `
+  Previous conversation output...
+
+  ⠋ General Task
+  research the codebase (0 toolcalls)
+
+  ctrl+j view subagents
+
+  esc interrupt
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: subagent Task with 0 toolcalls but spinner present is actively executing")
+	}
+	// SubagentInfo should be populated even with 0 toolcalls
+	if len(result.Subagents) != 1 {
+		t.Fatalf("expected 1 subagent, got %d", len(result.Subagents))
+	}
+	sub := result.Subagents[0]
+	if sub.AgentType != "General" {
+		t.Errorf("agent_type: got %q, want %q", sub.AgentType, "General")
+	}
+	if sub.Description != "research the codebase" {
+		t.Errorf("description: got %q, want %q", sub.Description, "research the codebase")
+	}
+	if sub.ToolCalls != 0 {
+		t.Errorf("tool_calls: got %d, want %d", sub.ToolCalls, 0)
+	}
+}
+
+func TestOpenCode_SubagentTask_ViewSubagentsIndicator(t *testing.T) {
+	// The "view subagents" text is unique to running Task blocks.
+	// It should be recognized as an active execution indicator.
+	content := `
+  Previous conversation output...
+
+  ⠼ Explore Task
+  find all parsers (1 toolcalls)
+  └ Grep pattern
+
+  ctrl+j view subagents
+
+  esc interrupt
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: 'view subagents' indicates active subagent execution")
+	}
+	// SubagentInfo should be populated with Explore type
+	if len(result.Subagents) != 1 {
+		t.Fatalf("expected 1 subagent, got %d", len(result.Subagents))
+	}
+	sub := result.Subagents[0]
+	if sub.AgentType != "Explore" {
+		t.Errorf("agent_type: got %q, want %q", sub.AgentType, "Explore")
+	}
+	if sub.CurrentTool != "Grep pattern" {
+		t.Errorf("current_tool: got %q, want %q", sub.CurrentTool, "Grep pattern")
+	}
+}
+
+func TestOpenCode_SubagentTask_CompletedNotActive(t *testing.T) {
+	// Completed subagent Task should NOT be detected as active.
+	// The title is rendered as "# General Task" (no spinner) and the prompt
+	// is "> " (idle).
+	// Subagents should NOT be populated for completed tasks.
+	content := `
+  Previous conversation output...
+
+  # General Task
+  implement the feature (5 toolcalls)
+
+  Some output from the task...
+  More output lines here...
+  And another line...
+  Task completed successfully.
+
+  >
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true: completed subagent Task should show as idle at prompt")
+	}
+	if len(result.Subagents) != 0 {
+		t.Errorf("expected 0 subagents for completed task, got %d", len(result.Subagents))
+	}
+}
+
+func TestOpenCode_SubagentTask_ZeroToolcallsNoSpinnerFallback(t *testing.T) {
+	// Edge case: what if tmux capture-pane doesn't capture the braille spinner
+	// but DOES capture the text? The "esc interrupt" at the bottom should
+	// still be detected. This tests that "esc interrupt" alone is sufficient.
+	content := `
+  Previous conversation output...
+
+  General Task
+  research the codebase (0 toolcalls)
+
+  esc interrupt
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: 'esc interrupt' alone should indicate active execution even without spinner")
+	}
+}
+
+func TestOpenCode_SubagentTask_DelegatingPending(t *testing.T) {
+	// InlineTool pending state: "~ Delegating..." shown before BlockTool renders.
+	// This is a transient state but should be detected as active execution
+	// because it indicates a subagent dispatch is in progress.
+	// The "esc interrupt" status bar will also be present.
+	content := `
+  Previous conversation output...
+
+  ~ Delegating...
+
+  esc interrupt
+`
+	p := &OpenCodeParser{}
+	result := p.Parse(content, []string{"opencode"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false: 'Delegating...' with 'esc interrupt' indicates active subagent dispatch")
+	}
+}
+
 func TestOpenCode_SingleQuestionNoTabs(t *testing.T) {
 	// Single question without tabs — no Tab/BTab actions.
 	content := `

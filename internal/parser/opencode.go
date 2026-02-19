@@ -2,6 +2,8 @@ package parser
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/timvw/pane-patrol/internal/model"
@@ -68,6 +70,7 @@ func (p *OpenCodeParser) Parse(content string, processTree []string) *Result {
 			Blocked:   false,
 			Reason:    "actively executing",
 			Reasoning: "deterministic parser: detected active execution indicators (spinner, Build/Plan, progress bar)",
+			Subagents: p.parseSubagentTasks(content),
 		}
 	}
 
@@ -504,4 +507,82 @@ func extractBlock(content, marker string) string {
 		}
 	}
 	return strings.Join(block, "\n")
+}
+
+// taskTitleRe matches a running Task block title line.
+// The spinner character is followed by the agent type and " Task".
+// Example: "⠹ General Task" → AgentType="General"
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/index.tsx (line 1877)
+//
+//	title = "# " + Locale.titlecase(subagent_type) + " Task"
+//	Spinner strips the "# " prefix: title.replace(/^# /, "")
+var taskTitleRe = regexp.MustCompile(`(\S+)\s+Task$`)
+
+// taskBodyRe matches the description + toolcalls line below a Task title.
+// Example: "implement the feature (3 toolcalls)" → description="implement the feature", N=3
+//
+// Source: packages/opencode/src/cli/cmd/tui/routes/session/index.tsx (line 1888)
+//
+//	"{description} ({tools().length} toolcalls)"
+var taskBodyRe = regexp.MustCompile(`^(.+?)\s+\((\d+)\s+toolcalls?\)$`)
+
+// parseSubagentTasks scans pane content for running Task blocks and returns
+// SubagentInfo for each one found. Only considers lines in the bottom portion
+// of the screen (bottomLines) to avoid stale completed tasks in scrollback.
+//
+// A running Task block has a braille spinner on the title line. Completed
+// tasks show "# {Type} Task" (no spinner) and are ignored.
+func (p *OpenCodeParser) parseSubagentTasks(content string) []model.SubagentInfo {
+	lines := strings.Split(content, "\n")
+	bottom := bottomNonEmpty(lines, bottomLines)
+
+	var subagents []model.SubagentInfo
+	for i, line := range bottom {
+		trimmed := strings.TrimSpace(line)
+
+		// Look for a braille spinner character followed by "{Type} Task"
+		if !hasBrailleSpinner(trimmed) {
+			continue
+		}
+		m := taskTitleRe.FindStringSubmatch(trimmed)
+		if m == nil {
+			continue
+		}
+
+		info := model.SubagentInfo{
+			AgentType: m[1],
+		}
+
+		// Next line should be the description + toolcalls
+		if i+1 < len(bottom) {
+			bodyTrimmed := strings.TrimSpace(bottom[i+1])
+			if bm := taskBodyRe.FindStringSubmatch(bodyTrimmed); bm != nil {
+				info.Description = bm[1]
+				info.ToolCalls, _ = strconv.Atoi(bm[2])
+			}
+		}
+
+		// Line after that may be the current tool: "└ {ToolName} {title}"
+		if i+2 < len(bottom) {
+			toolTrimmed := strings.TrimSpace(bottom[i+2])
+			if strings.HasPrefix(toolTrimmed, "└ ") {
+				info.CurrentTool = strings.TrimPrefix(toolTrimmed, "└ ")
+			}
+		}
+
+		subagents = append(subagents, info)
+	}
+	return subagents
+}
+
+// hasBrailleSpinner returns true if the string contains a braille spinner
+// character (U+280B to U+283F).
+func hasBrailleSpinner(s string) bool {
+	for _, r := range s {
+		if r >= '⠋' && r <= '⠿' {
+			return true
+		}
+	}
+	return false
 }
