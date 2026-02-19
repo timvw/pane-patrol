@@ -12,7 +12,7 @@ It uses **deterministic parsers** for known agents (OpenCode, Claude Code,
 Codex) — instant, free, no API key needed. Unknown panes are classified as
 "not_an_agent".
 
-![Supervisor TUI — blocked agents with suggested actions](docs/images/supervisor-blocked.png)
+![Supervisor TUI — filter cycling, navigation, and jump-to-pane](docs/images/demo-supervisor.gif)
 
 ## How it works
 
@@ -170,6 +170,16 @@ The summary line shows `visible/total panes` so you can see how much is filtered
 |---------|--------|-----|
 | ![blocked](docs/images/supervisor-blocked.png) | ![agents](docs/images/supervisor-agents.png) | ![all](docs/images/supervisor-all.png) |
 
+### Jump to pane
+
+Press `Enter` on any pane to jump directly to it in tmux. The supervisor exits
+and `tmux switch-client` navigates you to the blocked agent, showing its actual
+TUI — permission dialogs, question prompts, or whatever is waiting for input.
+
+| select a pane | jump to the agent TUI |
+|---------------|----------------------|
+| ![selected](docs/images/supervisor-selected.png) | ![jump](docs/images/supervisor-jump.png) |
+
 ### Auto-nudge
 
 Press `a` to toggle automatic nudging. When enabled, the supervisor
@@ -264,7 +274,7 @@ actions with risk levels.
 
 ### Scan all panes
 
-![Scan output — JSON with agent classifications](docs/images/scan-output.png)
+![Scan output — JSON with agent classifications](docs/images/demo-scan.gif)
 
 ```bash
 # Scan all panes (parallel by default, max 10 concurrent)
