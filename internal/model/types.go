@@ -115,13 +115,13 @@ func BuildProcessHeader(pane Pane) string {
 	}
 	var b strings.Builder
 	b.WriteString("[Process Info]\n")
-	b.WriteString(fmt.Sprintf("Session: %s\n", pane.Session))
-	b.WriteString(fmt.Sprintf("Shell PID: %d\n", pane.PID))
-	b.WriteString(fmt.Sprintf("Shell command: %s\n", pane.Command))
+	fmt.Fprintf(&b, "Session: %s\n", pane.Session)
+	fmt.Fprintf(&b, "Shell PID: %d\n", pane.PID)
+	fmt.Fprintf(&b, "Shell command: %s\n", pane.Command)
 	if len(pane.ProcessTree) > 0 {
 		b.WriteString("Child processes:\n")
 		for _, proc := range pane.ProcessTree {
-			b.WriteString(fmt.Sprintf("  %s\n", proc))
+			fmt.Fprintf(&b, "  %s\n", proc)
 		}
 	} else {
 		b.WriteString("Child processes: (none)\n")
