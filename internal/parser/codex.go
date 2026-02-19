@@ -47,6 +47,18 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 	// idle prompt, any dialog text or active indicators above it are stale
 	// (from a prior turn or the agent's own output) and should be ignored.
 	if p.isIdleAtBottom(content) {
+		if subs := findCodexSubagents(processTree); len(subs) > 0 {
+			return &Result{
+				Agent:     "codex",
+				Blocked:   false,
+				Reason:    "subagent active",
+				Reasoning: "deterministic parser: Codex TUI idle at bottom, but process tree contains nested codex process(es)",
+				Subagents: subs,
+				Actions: []model.Action{
+					{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
+				},
+			}
+		}
 		return &Result{
 			Agent:      "codex",
 			Blocked:    true,
@@ -86,6 +98,20 @@ func (p *CodexParser) Parse(content string, processTree []string) *Result {
 			Blocked:   false,
 			Reason:    "actively working",
 			Reasoning: "deterministic parser: detected Codex working/execution indicators",
+		}
+	}
+
+	// Before falling through to idle, check for subagent processes.
+	if subs := findCodexSubagents(processTree); len(subs) > 0 {
+		return &Result{
+			Agent:     "codex",
+			Blocked:   false,
+			Reason:    "subagent active",
+			Reasoning: "deterministic parser: Codex TUI detected, no active execution indicators, but process tree contains nested codex process(es)",
+			Subagents: subs,
+			Actions: []model.Action{
+				{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
+			},
 		}
 	}
 
@@ -360,6 +386,30 @@ func (p *CodexParser) parseUserInputRequest(content string) *Result {
 		Recommended: 0,
 		Reasoning:   "deterministic parser: Codex user input request dialog detected",
 	}
+}
+
+// findCodexSubagents detects nested Codex child processes.
+//
+// When Codex dispatches a Task subagent, it spawns a child codex process.
+// The presence of MORE THAN ONE "codex" process in the tree indicates at
+// least one subagent is running.
+//
+// The first matching entry is the parent agent; additional matches are
+// subagents.
+func findCodexSubagents(processTree []string) []model.SubagentInfo {
+	var matches int
+	var subagents []model.SubagentInfo
+	for _, proc := range processTree {
+		lower := strings.ToLower(proc)
+		if !strings.Contains(lower, "codex") {
+			continue
+		}
+		matches++
+		if matches > 1 {
+			subagents = append(subagents, model.SubagentInfo{})
+		}
+	}
+	return subagents
 }
 
 // isActiveExecution checks for Codex working/execution indicators in the

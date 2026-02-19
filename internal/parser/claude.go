@@ -60,6 +60,18 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 	// This prevents false positives from stale "Do you want to proceed?" or
 	// "Claude needs your permission" text in scrollback/agent output.
 	if p.isIdleAtBottom(content) {
+		if subs := findClaudeSubagents(processTree); len(subs) > 0 {
+			return &Result{
+				Agent:     "claude_code",
+				Blocked:   false,
+				Reason:    "subagent active",
+				Reasoning: "deterministic parser: Claude Code TUI idle at bottom, but process tree contains nested claude process(es)",
+				Subagents: subs,
+				Actions: []model.Action{
+					{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
+				},
+			}
+		}
 		return &Result{
 			Agent:      "claude_code",
 			Blocked:    true,
@@ -90,6 +102,20 @@ func (p *ClaudeCodeParser) Parse(content string, processTree []string) *Result {
 			Blocked:   false,
 			Reason:    "actively executing",
 			Reasoning: "deterministic parser: detected active tool execution indicators",
+		}
+	}
+
+	// Before falling through to idle, check for subagent processes.
+	if subs := findClaudeSubagents(processTree); len(subs) > 0 {
+		return &Result{
+			Agent:     "claude_code",
+			Blocked:   false,
+			Reason:    "subagent active",
+			Reasoning: "deterministic parser: Claude Code TUI detected, no active execution indicators, but process tree contains nested claude process(es)",
+			Subagents: subs,
+			Actions: []model.Action{
+				{Keys: "Enter", Label: "send empty message / continue", Risk: "low", Raw: true},
+			},
 		}
 	}
 
@@ -437,6 +463,34 @@ func (p *ClaudeCodeParser) hasNumberedOptions(content string) bool {
 // component cursor line: "❯ 1. Yes ..." or "❯ 2. No". These have the "❯ "
 // prefix followed by a digit and period. This distinguishes them from idle
 // prompt lines like "❯ " or "❯ user typed text".
+// findClaudeSubagents detects nested Claude Code child processes.
+//
+// When Claude Code dispatches a Task subagent, it spawns a child claude
+// process. The presence of MORE THAN ONE "claude" process in the tree
+// indicates at least one subagent is running.
+//
+// The first matching entry is the parent agent; additional matches are
+// subagents. Entries containing "pane-patrol" or "pane-supervisor" are
+// excluded (same filter as isClaudeCode).
+func findClaudeSubagents(processTree []string) []model.SubagentInfo {
+	var matches int
+	var subagents []model.SubagentInfo
+	for _, proc := range processTree {
+		lower := strings.ToLower(proc)
+		if !strings.Contains(lower, "claude") {
+			continue
+		}
+		if strings.Contains(lower, "pane-patrol") || strings.Contains(lower, "pane-supervisor") {
+			continue
+		}
+		matches++
+		if matches > 1 {
+			subagents = append(subagents, model.SubagentInfo{})
+		}
+	}
+	return subagents
+}
+
 func isDialogSelector(trimmed string) bool {
 	const prefix = "❯ "
 	if !strings.HasPrefix(trimmed, prefix) {

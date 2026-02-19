@@ -1999,3 +1999,222 @@ func TestOpenCode_SubagentDefaultFallthrough(t *testing.T) {
 		t.Errorf("reason should mention subagent, got %q", result.Reason)
 	}
 }
+
+// --- Codex Subagent Detection Tests ---
+
+func TestCodex_SubagentInProcessTree_NotIdle(t *testing.T) {
+	// Parent TUI shows idle prompt, but process tree has a nested codex child.
+	// Should be classified as working (subagent active), NOT idle.
+	content := `
+  some previous output...
+
+  > 
+`
+	processTree := []string{
+		"codex --model o3",
+		"  codex --model o3",
+	}
+	p := &CodexParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Agent != "codex" {
+		t.Errorf("agent: got %q, want %q", result.Agent, "codex")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false when subagent is active")
+	}
+	if !strings.Contains(result.Reason, "subagent") {
+		t.Errorf("reason should mention subagent, got %q", result.Reason)
+	}
+	if len(result.Subagents) == 0 {
+		t.Fatal("expected at least one subagent in result")
+	}
+}
+
+func TestCodex_NoSubagent_StillIdle(t *testing.T) {
+	// Parent TUI shows idle prompt, only one codex process.
+	// Should remain idle at prompt (unchanged behavior).
+	content := `
+  some previous output...
+
+  > 
+`
+	processTree := []string{
+		"codex --model o3",
+	}
+	p := &CodexParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true when no subagent and idle prompt")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "idle at prompt")
+	}
+}
+
+func TestCodex_ActiveTUI_WithSubagent_TUIPrecedence(t *testing.T) {
+	// Parent TUI shows Working AND has nested codex child.
+	// TUI indicators take precedence.
+	content := `
+  Working
+
+  └ Reading files...
+`
+	processTree := []string{
+		"codex --model o3",
+		"  codex --model o3",
+	}
+	p := &CodexParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false for active execution")
+	}
+	if result.Reason != "actively working" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "actively working")
+	}
+}
+
+func TestCodex_SubagentDefaultFallthrough(t *testing.T) {
+	// Codex TUI detected but no idle prompt and no active indicators.
+	// Process tree has nested codex child. Should detect as working via subagent.
+	content := `
+  some completed output
+  Plan mode  shift+tab to cycle
+`
+	processTree := []string{
+		"codex --model o3",
+		"  codex --model o3",
+	}
+	p := &CodexParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false when subagent is active")
+	}
+	if !strings.Contains(result.Reason, "subagent") {
+		t.Errorf("reason should mention subagent, got %q", result.Reason)
+	}
+}
+
+// --- Claude Code Subagent Detection Tests ---
+
+func TestClaude_SubagentInProcessTree_NotIdle(t *testing.T) {
+	// Parent TUI shows idle prompt, but process tree has a nested claude child.
+	// Should be classified as working (subagent active), NOT idle.
+	content := `
+  some previous output...
+
+  ? for shortcuts
+
+  ❯ 
+`
+	processTree := []string{
+		"node /opt/homebrew/bin/claude",
+		"  node /opt/homebrew/bin/claude",
+	}
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Agent != "claude_code" {
+		t.Errorf("agent: got %q, want %q", result.Agent, "claude_code")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false when subagent is active")
+	}
+	if !strings.Contains(result.Reason, "subagent") {
+		t.Errorf("reason should mention subagent, got %q", result.Reason)
+	}
+	if len(result.Subagents) == 0 {
+		t.Fatal("expected at least one subagent in result")
+	}
+}
+
+func TestClaude_NoSubagent_StillIdle(t *testing.T) {
+	// Parent TUI shows idle prompt, only one claude process.
+	// Should remain idle at prompt (unchanged behavior).
+	content := `
+  some previous output...
+
+  ? for shortcuts
+
+  ❯ 
+`
+	processTree := []string{
+		"node /opt/homebrew/bin/claude",
+	}
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true when no subagent and idle prompt")
+	}
+	if result.Reason != "idle at prompt" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "idle at prompt")
+	}
+}
+
+func TestClaude_ActiveTUI_WithSubagent_TUIPrecedence(t *testing.T) {
+	// Parent TUI shows active thinking AND has nested claude child.
+	// TUI indicators take precedence.
+	content := `
+  some output...
+
+  ✻ Thinking… (15s · ↓ 1.2k)
+
+  ? for shortcuts
+`
+	processTree := []string{
+		"node /opt/homebrew/bin/claude",
+		"  node /opt/homebrew/bin/claude",
+	}
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false for active execution")
+	}
+	if result.Reason != "actively executing" {
+		t.Errorf("reason: got %q, want %q", result.Reason, "actively executing")
+	}
+}
+
+func TestClaude_SubagentDefaultFallthrough(t *testing.T) {
+	// Claude Code TUI detected but no idle prompt and no active indicators.
+	// Process tree has nested claude child. Should detect as working via subagent.
+	content := `
+  ✻ Worked for 2m 30s
+  
+  some completed output from agent
+`
+	processTree := []string{
+		"node /opt/homebrew/bin/claude",
+		"  node /opt/homebrew/bin/claude",
+	}
+	p := &ClaudeCodeParser{}
+	result := p.Parse(content, processTree)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Blocked {
+		t.Error("expected blocked=false when subagent is active")
+	}
+	if !strings.Contains(result.Reason, "subagent") {
+		t.Errorf("reason should mention subagent, got %q", result.Reason)
+	}
+}
