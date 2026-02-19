@@ -169,6 +169,14 @@ func (p *CodexParser) isCodex(content string, processTree []string) bool {
 		strings.Contains(content, "Execute mode")) && strings.Contains(content, "shift+tab to cycle") {
 		return true
 	}
+	// Codex splash banner: ">_ OpenAI Codex"
+	if strings.Contains(content, "OpenAI Codex") {
+		return true
+	}
+	// "? for shortcuts" with "context left" is Codex, not Claude
+	if strings.Contains(content, "? for shortcuts") && strings.Contains(content, "context left") {
+		return true
+	}
 	return false
 }
 

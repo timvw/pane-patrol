@@ -51,8 +51,8 @@ func NewRegistry() *Registry {
 	return &Registry{
 		parsers: []AgentParser{
 			&OpenCodeParser{},
-			&ClaudeCodeParser{},
 			&CodexParser{},
+			&ClaudeCodeParser{},
 		},
 	}
 }

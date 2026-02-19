@@ -532,6 +532,32 @@ func TestCodex_IdleAtPrompt(t *testing.T) {
 	}
 }
 
+func TestCodex_IdentifiedBySplashBanner(t *testing.T) {
+	// Codex at idle shows ">_ OpenAI Codex" splash and "? for shortcuts" footer.
+	// Should be identified as Codex, NOT Claude Code (which also has "? for shortcuts").
+	content := `
+│ >_ OpenAI Codex (v0.104.0)                  │
+│                                             │
+│ model:     gpt-5.3-codex   /model to change │
+│ directory: /tmp                             │
+╰─────────────────────────────────────────────╯
+  Tip: New 2x rate limits until April 2nd.
+› Run /review on my current changes
+  ? for shortcuts                                                                                     100% context left
+`
+	r := NewRegistry()
+	result := r.Parse(content, []string{"node"})
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Agent != "codex" {
+		t.Errorf("agent: got %q, want %q — Codex splash banner should identify as Codex, not Claude", result.Agent, "codex")
+	}
+	if !result.Blocked {
+		t.Error("expected blocked=true (idle at prompt)")
+	}
+}
+
 func TestCodex_NotRecognized(t *testing.T) {
 	content := `$ python main.py
 Hello, world!
