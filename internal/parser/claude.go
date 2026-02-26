@@ -12,13 +12,26 @@ import (
 // Source reference: binary analysis of /opt/homebrew/Caskroom/claude-code/2.1.42/claude
 // Built with Bun, uses Ink (React terminal framework) in raw mode.
 //
-// Thinking indicator: "✻" (U+273B, variable yfT in source).
+// Thinking indicator: Claude Code cycles through an array of indicator characters
+// that varies by terminal. The characters animate (rotate) during active thinking.
+//
+// Non-Ghostty (iTerm2, Terminal.app, etc.):
+//
+//	["·", "✢", "✳", "✶", "✻", "✽"]
+//	U+00B7, U+2722, U+2733, U+2736, U+273B, U+273D
+//
+// Ghostty:
+//
+//	["·", "✢", "✳", "✶", "✻", "*"]
+//	U+00B7, U+2722, U+2733, U+2736, U+273B, U+002A
+//
+// Display patterns (any indicator char, shown as "✻" below for brevity):
 //
 //   - Active:    "✻ <verb>… (<duration> · ↓ <tokens>)" — randomized -ing verb + ellipsis.
-//     ~150+ verbs (source: K8T array): Pondering, Scampering, Reasoning, Cogitating,
+//     ~150+ verbs (source: hLT/ByA array): Pondering, Scampering, Reasoning, Cogitating,
 //     Brewing, Cooking, Clauding, Philosophising, Razzle-dazzling, etc.
 //   - Completed: "✻ <verb> for <duration>" — randomized past-tense verb, NO ellipsis.
-//     8 verbs (source: thT array): Baked, Brewed, Churned, Cogitated, Cooked,
+//     8 verbs (source: NLT array): Baked, Brewed, Churned, Cogitated, Cooked,
 //     Crunched, Sautéed, Worked.
 //   - Idle:      "✻ Idle" — no ellipsis, no duration.
 //
@@ -45,6 +58,93 @@ import (
 // Confirmation keybinding context, but the permission dialog components do NOT
 // register handlers for these actions. The keystrokes are consumed by the
 // keybinding resolver and silently dropped. Use numeric keys instead.
+// spinnerIndicators contains all characters Claude Code uses as its
+// thinking/spinner indicator. The TUI cycles through these during active
+// thinking. We must recognize all of them, not just "✻".
+var spinnerIndicators = []string{
+	"·", // U+00B7 Middle Dot
+	"✢", // U+2722 Four Teardrop-Spoked Asterisk
+	"✳", // U+2733 Eight Spoked Asterisk
+	"✶", // U+2736 Six Pointed Black Star
+	"✻", // U+273B Teardrop-Spoked Asterisk
+	"✽", // U+273D Heavy Teardrop-Spoked Asterisk
+	"*", // U+002A Asterisk (Ghostty fallback)
+}
+
+var ambiguousSpinnerIndicators = map[string]struct{}{
+	"·": {},
+	"*": {},
+}
+
+func isAmbiguousSpinnerIndicator(ind string) bool {
+	_, ok := ambiguousSpinnerIndicators[ind]
+	return ok
+}
+
+// splitSpinnerLine extracts "<indicator> <rest>" from a potential spinner line.
+func splitSpinnerLine(trimmed string) (indicator string, rest string, ok bool) {
+	for _, ind := range spinnerIndicators {
+		if trimmed == ind {
+			return ind, "", true
+		}
+		prefix := ind + " "
+		if strings.HasPrefix(trimmed, prefix) {
+			return ind, strings.TrimSpace(trimmed[len(prefix):]), true
+		}
+	}
+	return "", "", false
+}
+
+// isSpinnerStateLine reports whether "<indicator> <rest>" matches known Claude
+// spinner states:
+//   - Active:    "<ind> Verb… (duration · ↓ tokens ...)"
+//   - Completed: "<ind> Verb for duration"
+//   - Idle:      "<ind> Idle"
+//
+// For ambiguous indicators ("·", "*"), require the full active metrics shape
+// to avoid false positives on markdown bullets like "* next...".
+func isSpinnerStateLine(indicator, rest string) bool {
+	if rest == "" {
+		return !isAmbiguousSpinnerIndicator(indicator)
+	}
+	if rest == "Idle" || strings.HasPrefix(rest, "Idle ") {
+		return true
+	}
+	if strings.Contains(rest, " for ") {
+		return true
+	}
+	if strings.Contains(rest, "…") || strings.Contains(rest, "...") {
+		if !isAmbiguousSpinnerIndicator(indicator) {
+			return true
+		}
+		return strings.Contains(rest, "(") && strings.Contains(rest, ")") && strings.Contains(rest, "↓")
+	}
+	return false
+}
+
+// hasSpinnerPrefix reports whether trimmed starts with one of the known
+// spinner indicator characters and matches a known Claude spinner state line.
+func hasSpinnerPrefix(trimmed string) bool {
+	indicator, rest, ok := splitSpinnerLine(trimmed)
+	if !ok {
+		return false
+	}
+	return isSpinnerStateLine(indicator, rest)
+}
+
+// containsSpinnerIndicator reports whether content contains any of the
+// spinner indicator characters. Used for content-based Claude Code
+// identification (fallback when process tree is unavailable).
+// Requires line-level Claude spinner state shape to avoid false positives.
+func containsSpinnerIndicator(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if hasSpinnerPrefix(strings.TrimSpace(line)) {
+			return true
+		}
+	}
+	return false
+}
+
 type ClaudeCodeParser struct{}
 
 func (p *ClaudeCodeParser) Name() string { return "claude_code" }
@@ -122,9 +222,10 @@ func (p *ClaudeCodeParser) isIdleAtBottom(content string) bool {
 		trimmed := strings.TrimSpace(line)
 
 		// Active "✻ Verb…" at the bottom = NOT idle.
+		// Claude Code cycles through multiple indicator characters (✢, ✳, ✶, ✻, ✽, etc.).
 		// Completed verbs are randomized (Cogitated, Baked, Brewed, etc.)
 		// so we rely solely on the ellipsis to distinguish active from completed.
-		if strings.HasPrefix(trimmed, "✻") {
+		if hasSpinnerPrefix(trimmed) {
 			if strings.Contains(trimmed, "…") || strings.Contains(trimmed, "...") {
 				return false
 			}
@@ -191,8 +292,8 @@ func (p *ClaudeCodeParser) isClaudeCode(content string, processTree []string) bo
 	if strings.Contains(content, "? for shortcuts") {
 		return true
 	}
-	// "✻" is Claude Code's unique thinking/working indicator
-	if strings.Contains(content, "✻") {
+	// Claude Code's unique thinking/working indicator characters
+	if containsSpinnerIndicator(content) {
 		return true
 	}
 	return false
@@ -298,7 +399,8 @@ func (p *ClaudeCodeParser) isActiveExecution(content string) bool {
 
 		// "✻ Verb…" = active (ellipsis present)
 		// "✻ Verb for Xm Ys" / "✻ Idle" = completed/idle (no ellipsis)
-		if strings.HasPrefix(trimmed, "✻") {
+		// Claude Code cycles through multiple indicator characters.
+		if hasSpinnerPrefix(trimmed) {
 			if strings.Contains(trimmed, "…") || strings.Contains(trimmed, "...") {
 				return true
 			}

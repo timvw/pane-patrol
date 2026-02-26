@@ -284,6 +284,91 @@ func TestClaude_ActiveThinkingVariousVerbs(t *testing.T) {
 	}
 }
 
+func TestClaude_ActiveThinkingAllSpinnerChars(t *testing.T) {
+	// Claude Code cycles through multiple indicator characters during thinking.
+	// Non-Ghostty: ["·", "✢", "✳", "✶", "✻", "✽"]
+	// Ghostty:     ["·", "✢", "✳", "✶", "✻", "*"]
+	// All must be recognized as active when followed by verb + ellipsis.
+	indicators := []struct {
+		char string
+		name string
+	}{
+		{"✢", "U+2722 Four Teardrop-Spoked Asterisk"},
+		{"✳", "U+2733 Eight Spoked Asterisk"},
+		{"✶", "U+2736 Six Pointed Black Star"},
+		{"✻", "U+273B Teardrop-Spoked Asterisk"},
+		{"✽", "U+273D Heavy Teardrop-Spoked Asterisk"},
+		{"·", "U+00B7 Middle Dot"},
+		{"*", "U+002A Asterisk"},
+	}
+	p := &ClaudeCodeParser{}
+	for _, ind := range indicators {
+		t.Run(ind.name, func(t *testing.T) {
+			content := ind.char + " Gusting… (1m 23s · ↓ 2.8k tokens · thought for 5s)\n\n❯\n? for shortcuts"
+			result := p.Parse(content, []string{"claude"})
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if result.Blocked {
+				t.Errorf("expected blocked=false during active thinking with indicator %s (%s)", ind.char, ind.name)
+			}
+		})
+	}
+}
+
+func TestClaude_CompletedAllSpinnerChars(t *testing.T) {
+	// Completed indicators (no ellipsis) must still be recognized as idle.
+	indicators := []string{"·", "✢", "✳", "✶", "✻", "✽", "*"}
+	p := &ClaudeCodeParser{}
+	for _, ind := range indicators {
+		t.Run(ind, func(t *testing.T) {
+			content := ind + " Brewed for 39s\n\n❯\n? for shortcuts"
+			result := p.Parse(content, []string{"claude"})
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if !result.Blocked {
+				t.Errorf("expected blocked=true for completed indicator %s (no ellipsis = idle)", ind)
+			}
+		})
+	}
+}
+
+func TestClaude_BulletListNotMistakenForSpinner(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "asterisk-bullet",
+			content: `* Next steps...
+
+❯
+? for shortcuts`,
+		},
+		{
+			name: "middle-dot-bullet",
+			content: `· Next steps…
+
+❯
+? for shortcuts`,
+		},
+	}
+
+	p := &ClaudeCodeParser{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := p.Parse(tc.content, []string{"claude"})
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if !result.Blocked {
+				t.Fatalf("expected blocked=true for markdown-style bullet line, got blocked=false (reason=%q)", result.Reason)
+			}
+		})
+	}
+}
+
 func TestClaude_CompletedNotActive(t *testing.T) {
 	// Completed verbs are randomized (8 possible: Baked, Brewed, Churned,
 	// Cogitated, Cooked, Crunched, Sautéed, Worked). All should be treated
@@ -400,6 +485,26 @@ func TestClaude_IdentifiedByThinkingIndicator(t *testing.T) {
 	}
 	if result.Blocked {
 		t.Error("expected blocked=false (actively thinking)")
+	}
+}
+
+func TestClaude_IdentifiedByAmbiguousThinkingIndicators(t *testing.T) {
+	indicators := []string{"·", "*"}
+	p := &ClaudeCodeParser{}
+	for _, ind := range indicators {
+		t.Run(ind, func(t *testing.T) {
+			content := ind + " Reasoning… (45s · ↓ 1.2k tokens)"
+			result := p.Parse(content, []string{"node"}) // no "claude" in process tree
+			if result == nil {
+				t.Fatal("expected non-nil result for ambiguous spinner indicator fallback")
+			}
+			if result.Agent != "claude_code" {
+				t.Fatalf("agent: got %q, want %q", result.Agent, "claude_code")
+			}
+			if result.Blocked {
+				t.Fatal("expected blocked=false (actively thinking)")
+			}
+		})
 	}
 }
 
