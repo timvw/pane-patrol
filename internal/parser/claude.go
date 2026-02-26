@@ -71,30 +71,74 @@ var spinnerIndicators = []string{
 	"*", // U+002A Asterisk (Ghostty fallback)
 }
 
-// hasSpinnerPrefix reports whether trimmed starts with one of the known
-// spinner indicator characters followed by a space. Returns the indicator
-// and true if matched.
-func hasSpinnerPrefix(trimmed string) bool {
+var ambiguousSpinnerIndicators = map[string]struct{}{
+	"·": {},
+	"*": {},
+}
+
+func isAmbiguousSpinnerIndicator(ind string) bool {
+	_, ok := ambiguousSpinnerIndicators[ind]
+	return ok
+}
+
+// splitSpinnerLine extracts "<indicator> <rest>" from a potential spinner line.
+func splitSpinnerLine(trimmed string) (indicator string, rest string, ok bool) {
 	for _, ind := range spinnerIndicators {
-		if strings.HasPrefix(trimmed, ind+" ") || trimmed == ind {
-			return true
+		if trimmed == ind {
+			return ind, "", true
+		}
+		prefix := ind + " "
+		if strings.HasPrefix(trimmed, prefix) {
+			return ind, strings.TrimSpace(trimmed[len(prefix):]), true
 		}
 	}
+	return "", "", false
+}
+
+// isSpinnerStateLine reports whether "<indicator> <rest>" matches known Claude
+// spinner states:
+//   - Active:    "<ind> Verb… (duration · ↓ tokens ...)"
+//   - Completed: "<ind> Verb for duration"
+//   - Idle:      "<ind> Idle"
+//
+// For ambiguous indicators ("·", "*"), require the full active metrics shape
+// to avoid false positives on markdown bullets like "* next...".
+func isSpinnerStateLine(indicator, rest string) bool {
+	if rest == "" {
+		return !isAmbiguousSpinnerIndicator(indicator)
+	}
+	if rest == "Idle" || strings.HasPrefix(rest, "Idle ") {
+		return true
+	}
+	if strings.Contains(rest, " for ") {
+		return true
+	}
+	if strings.Contains(rest, "…") || strings.Contains(rest, "...") {
+		if !isAmbiguousSpinnerIndicator(indicator) {
+			return true
+		}
+		return strings.Contains(rest, "(") && strings.Contains(rest, ")") && strings.Contains(rest, "↓")
+	}
 	return false
+}
+
+// hasSpinnerPrefix reports whether trimmed starts with one of the known
+// spinner indicator characters and matches a known Claude spinner state line.
+func hasSpinnerPrefix(trimmed string) bool {
+	indicator, rest, ok := splitSpinnerLine(trimmed)
+	if !ok {
+		return false
+	}
+	return isSpinnerStateLine(indicator, rest)
 }
 
 // containsSpinnerIndicator reports whether content contains any of the
 // spinner indicator characters. Used for content-based Claude Code
 // identification (fallback when process tree is unavailable).
-// Only checks the unambiguous dingbat characters, not "·" or "*" which
-// appear in ordinary text.
+// Requires line-level Claude spinner state shape to avoid false positives.
 func containsSpinnerIndicator(content string) bool {
-	for _, ind := range spinnerIndicators {
-		// Skip ambiguous characters that appear in normal text
-		if ind == "·" || ind == "*" {
-			continue
-		}
-		if strings.Contains(content, ind) {
+	for _, line := range strings.Split(content, "\n") {
+		if hasSpinnerPrefix(strings.TrimSpace(line)) {
 			return true
 		}
 	}
