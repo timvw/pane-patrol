@@ -16,7 +16,7 @@ We want a hook-first approach where assistants (Claude Code, OpenCode, Codex, ot
 
 ## Non-Goals (v1)
 
-- No pane-content fallback parsing for hook-enabled assistants.
+- No heuristic/fuzzy fallback; parser fallback remains deterministic.
 - No delivery retries, queueing, or durable event storage.
 - No cross-user event trust model.
 - No non-tmux multiplexer support in initial release.
@@ -30,7 +30,7 @@ We want a hook-first approach where assistants (Claude Code, OpenCode, Codex, ot
 4. Dashboard renders attention states from event state table.
 5. Enter/jump uses existing `tmux switch-client -t <target>` behavior.
 
-There is no parser fallback for these hook-driven states in v1.
+Hook events are primary; panes without hook events fall back to deterministic parser evaluation.
 
 ## Event Transport
 
@@ -151,7 +151,7 @@ All integration/E2E tests must avoid touching developer tmux sessions or hook di
 
 ## Acceptance Criteria
 
-- Hook events drive blocked/waiting dashboard entries without pane-content parsing fallback.
+- Hook events drive primary dashboard state; panes without hook events use deterministic parser fallback.
 - Hooks never block assistant flows when collector is absent.
 - Enter/jump from dashboard lands on correct tmux pane target.
 - Tests run in isolated environment with no host tmux/hook side effects.

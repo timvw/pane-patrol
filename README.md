@@ -144,9 +144,15 @@ Optional: override event socket path:
 pane-patrol supervisor --event-socket /tmp/pane-patrol-1000/events.sock
 ```
 
-In hook-first mode, the dashboard only shows attention states emitted by hooks
-(`waiting_input`, `waiting_approval`) and still uses `tmux switch-client` to
-jump to the pane target from events.
+In hook-first mode, hook events are primary for status and navigation. For
+panes without hook events, supervisor falls back to deterministic parser
+evaluation of pane content.
+
+- `blocked` filter shows blocked assistants (event- or parser-derived)
+- `agents` filter shows assistant panes (blocked + non-blocked)
+- `all` filter shows all panes
+
+Navigation still uses `tmux switch-client` to jump to the selected pane target.
 
 ### Install assistant hooks
 

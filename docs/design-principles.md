@@ -114,7 +114,8 @@ Filter semantics in supervisor:
 - Events are delivered over local Unix datagram socket.
 - State is normalized to deterministic enums (`waiting_input`, `waiting_approval`, etc.).
 - Dashboard keeps latest state per tmux target and uses existing target-based jump.
-- No pane-content fallback parsing in hook-first mode.
+- Hook events are primary per pane; panes without hook events fall back to
+  deterministic parser evaluation.
 
 ### Trust boundary
 
