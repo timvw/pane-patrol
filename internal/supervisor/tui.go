@@ -195,9 +195,6 @@ func (m *tuiModel) rebuildGroups() {
 			if v.Agent == "not_an_agent" {
 				continue
 			}
-			if v.EvalSource == model.EvalSourceEvent && !v.Blocked {
-				continue
-			}
 		case filterAll:
 			// show everything
 		}
@@ -223,16 +220,26 @@ func (m *tuiModel) rebuildGroups() {
 		return m.groups[i].name < m.groups[j].name
 	})
 
-	// Auto-expand sessions that have blocked panes (the ones that need
-	// attention), and single-pane sessions (no benefit to collapsing).
-	// Sessions with only active/non-blocked panes stay collapsed.
+	// Auto-expand policy by filter:
+	// - blocked: sessions with blocked panes and single-pane sessions
+	// - agents: sessions with any agent panes and single-pane sessions
+	// - all: all sessions
 	// Respect manual collapses: if the user explicitly collapsed a session,
 	// don't auto-expand it until the user re-expands it manually.
 	for _, g := range m.groups {
 		if m.manualCollapsed[g.name] {
 			continue
 		}
-		if len(g.verdicts) == 1 || g.blocked > 0 {
+		autoExpand := false
+		switch m.filter {
+		case filterBlocked:
+			autoExpand = len(g.verdicts) == 1 || g.blocked > 0
+		case filterAgents:
+			autoExpand = len(g.verdicts) == 1 || (g.blocked+g.active) > 0
+		case filterAll:
+			autoExpand = true
+		}
+		if autoExpand {
 			m.expanded[g.name] = true
 		}
 	}

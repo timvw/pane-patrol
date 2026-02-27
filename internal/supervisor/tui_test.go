@@ -383,7 +383,7 @@ func TestCursorStability_SessionHeaderPreserved(t *testing.T) {
 	}
 }
 
-func TestFilterAgents_EventSourceNonBlockedHidden(t *testing.T) {
+func TestFilterAgents_EventSourceIncludesNonBlocked(t *testing.T) {
 	m := &tuiModel{
 		verdicts: []model.Verdict{
 			{Target: "a:0.0", Session: "a", Agent: "claude", Blocked: false, EvalSource: model.EvalSourceEvent},
@@ -402,7 +402,24 @@ func TestFilterAgents_EventSourceNonBlockedHidden(t *testing.T) {
 			paneCount++
 		}
 	}
-	if paneCount != 1 {
-		t.Fatalf("expected 1 pane in agents filter for event source, got %d", paneCount)
+	if paneCount != 2 {
+		t.Fatalf("expected 2 panes in agents filter for event source, got %d", paneCount)
+	}
+}
+
+func TestAutoExpand_AllFilterExpandsSessions(t *testing.T) {
+	m := &tuiModel{
+		verdicts: []model.Verdict{
+			{Target: "alpha:0.0", Session: "alpha", Agent: "not_an_agent", Blocked: false},
+			{Target: "beta:0.0", Session: "beta", Agent: "not_an_agent", Blocked: false},
+		},
+		expanded:        make(map[string]bool),
+		manualCollapsed: make(map[string]bool),
+		filter:          filterAll,
+	}
+	m.rebuildGroups()
+
+	if !m.expanded["alpha"] || !m.expanded["beta"] {
+		t.Fatalf("expected all sessions expanded in all filter")
 	}
 }

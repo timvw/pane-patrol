@@ -155,7 +155,7 @@ func (s *Scanner) scanFromEvents() *ScanResult {
 		return &ScanResult{}
 	}
 	now := time.Now().UTC()
-	eventsSnapshot := s.EventStore.SnapshotAttention(now)
+	eventsSnapshot := s.EventStore.Snapshot(now)
 	if len(eventsSnapshot) == 0 {
 		return &ScanResult{}
 	}

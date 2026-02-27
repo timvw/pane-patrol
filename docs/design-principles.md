@@ -105,6 +105,12 @@ The `Multiplexer` interface enforces this separation.
 Supervisor uses hook-first mode where assistant hook events are the source of
 truth for blocked/waiting states.
 
+Filter semantics in supervisor:
+
+- `blocked`: only blocked assistant panes
+- `agents`: all assistant panes (blocked and non-blocked)
+- `all`: all panes
+
 - Events are delivered over local Unix datagram socket.
 - State is normalized to deterministic enums (`waiting_input`, `waiting_approval`, etc.).
 - Dashboard keeps latest state per tmux target and uses existing target-based jump.

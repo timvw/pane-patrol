@@ -192,6 +192,12 @@ Press `f` to cycle through three views:
 - **agents** — all agent panes (blocked + active), hides non-agents
 - **all** — everything including non-agent panes
 
+Default expansion behavior:
+
+- **blocked**: auto-expands sessions that need attention
+- **agents**: auto-expands sessions that contain assistant panes
+- **all**: auto-expands all sessions
+
 The summary line shows `visible/total panes` so you can see how much is filtered.
 
 | blocked | agents | all |

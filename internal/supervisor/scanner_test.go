@@ -250,24 +250,28 @@ func TestScanner_EventOnlyModeUsesStore(t *testing.T) {
 	store := events.NewStore(5 * time.Minute)
 	now := time.Now().UTC()
 	store.Upsert(events.Event{Assistant: "claude", State: events.StateWaitingInput, Target: "dev:0.1", TS: now})
+	store.Upsert(events.Event{Assistant: "claude", State: events.StateRunning, Target: "dev:0.2", TS: now})
 
 	scanner := &Scanner{EventStore: store, EventOnly: true}
 	result, err := scanner.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan() error: %v", err)
 	}
-	if len(result.Verdicts) != 1 {
-		t.Fatalf("expected 1 verdict, got %d", len(result.Verdicts))
+	if len(result.Verdicts) != 2 {
+		t.Fatalf("expected 2 verdicts, got %d", len(result.Verdicts))
 	}
-	v := result.Verdicts[0]
-	if v.Target != "dev:0.1" {
-		t.Fatalf("expected target dev:0.1, got %s", v.Target)
+	seen := map[string]model.Verdict{}
+	for _, v := range result.Verdicts {
+		seen[v.Target] = v
 	}
-	if !v.Blocked {
+	if !seen["dev:0.1"].Blocked {
 		t.Fatalf("expected blocked verdict from waiting_input state")
 	}
-	if v.EvalSource != model.EvalSourceEvent {
-		t.Fatalf("expected eval source event, got %s", v.EvalSource)
+	if seen["dev:0.2"].Blocked {
+		t.Fatalf("expected running event to be non-blocked")
+	}
+	if seen["dev:0.2"].EvalSource != model.EvalSourceEvent {
+		t.Fatalf("expected eval source event, got %s", seen["dev:0.2"].EvalSource)
 	}
 }
 
