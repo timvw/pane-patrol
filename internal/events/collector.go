@@ -18,6 +18,7 @@ type Collector struct {
 	path  string
 
 	MaxPayloadBytes int
+	OnAccepted      func(Event)
 
 	mu     sync.Mutex
 	conn   *net.UnixConn
@@ -115,6 +116,9 @@ func (c *Collector) readLoop() {
 			continue
 		}
 		c.store.Upsert(e)
+		if c.OnAccepted != nil {
+			c.OnAccepted(e)
+		}
 	}
 }
 

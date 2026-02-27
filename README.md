@@ -357,6 +357,11 @@ variables. Each scan creates a trace with per-pane spans including:
 See [docs/design-principles.md](docs/design-principles.md) for the full design
 philosophy, including ZFC compliance, composability, and feedback loop design.
 
+## Testing
+
+See [docs/testing.md](docs/testing.md) for local checks, hook install checks,
+isolated integration tests, and manual hook-first verification.
+
 ## Isolated integration testing
 
 Run hook-first integration tests in a containerized harness (private HOME,

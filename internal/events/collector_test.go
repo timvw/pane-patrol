@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -34,18 +35,40 @@ func TestCollector_AcceptsValidEvent(t *testing.T) {
 	store := NewStore(5 * time.Minute)
 	socketPath := shortSocketPath(t)
 	c := NewCollector(store, socketPath)
+	accepted := make(chan Event, 1)
+	c.OnAccepted = func(e Event) {
+		select {
+		case accepted <- e:
+		default:
+		}
+	}
 	if err := c.Start(ctx); err != nil {
 		t.Fatalf("start collector: %v", err)
 	}
 
-	payload := []byte(`{"assistant":"claude","state":"waiting_input","target":"s:0.1","ts":"2026-02-27T12:00:00Z"}`)
+	payloadBytes, err := json.Marshal(Event{
+		Assistant: "claude",
+		State:     StateWaitingInput,
+		Target:    "s:0.1",
+		TS:        time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	payload := payloadBytes
 	if err := sendDatagram(socketPath, payload); err != nil {
 		t.Fatalf("send datagram: %v", err)
 	}
 
-	waitFor(t, 1*time.Second, func() bool {
-		return len(store.Snapshot(time.Now().UTC())) == 1
-	})
+	select {
+	case <-accepted:
+		if got := len(store.Snapshot(time.Now().UTC())); got != 1 {
+			t.Fatalf("expected 1 stored event after accept callback, got %d", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("collector did not accept event within timeout")
+	}
 }
 
 func TestCollector_IgnoresMalformedEvent(t *testing.T) {
@@ -107,18 +130,6 @@ func sendDatagram(socketPath string, payload []byte) error {
 	defer conn.Close()
 	_, err = conn.Write(payload)
 	return err
-}
-
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("condition not met within %s", timeout)
 }
 
 func shortSocketPath(t *testing.T) string {
