@@ -382,3 +382,27 @@ func TestCursorStability_SessionHeaderPreserved(t *testing.T) {
 			m.cursor, m.items[m.cursor].kind, m.items[m.cursor].session)
 	}
 }
+
+func TestFilterAgents_EventSourceNonBlockedHidden(t *testing.T) {
+	m := &tuiModel{
+		verdicts: []model.Verdict{
+			{Target: "a:0.0", Session: "a", Agent: "claude", Blocked: false, EvalSource: model.EvalSourceEvent},
+			{Target: "a:0.1", Session: "a", Agent: "claude", Blocked: true, EvalSource: model.EvalSourceEvent,
+				Actions: []model.Action{{Keys: "Enter", Label: "ok"}}},
+		},
+		expanded:        map[string]bool{"a": true},
+		manualCollapsed: make(map[string]bool),
+		filter:          filterAgents,
+	}
+	m.rebuildGroups()
+
+	paneCount := 0
+	for _, it := range m.items {
+		if it.kind == itemPane {
+			paneCount++
+		}
+	}
+	if paneCount != 1 {
+		t.Fatalf("expected 1 pane in agents filter for event source, got %d", paneCount)
+	}
+}

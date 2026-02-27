@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/timvw/pane-patrol/internal/events"
 	"github.com/timvw/pane-patrol/internal/model"
 	"github.com/timvw/pane-patrol/internal/parser"
 )
@@ -242,6 +243,46 @@ func TestScanner_CacheHit(t *testing.T) {
 	}
 	if result2.CacheHits != 1 {
 		t.Errorf("Scan 2: got %d cache hits, want 1", result2.CacheHits)
+	}
+}
+
+func TestScanner_EventOnlyModeUsesStore(t *testing.T) {
+	store := events.NewStore(5 * time.Minute)
+	now := time.Now().UTC()
+	store.Upsert(events.Event{Assistant: "claude", State: events.StateWaitingInput, Target: "dev:0.1", TS: now})
+
+	scanner := &Scanner{EventStore: store, EventOnly: true}
+	result, err := scanner.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+	if len(result.Verdicts) != 1 {
+		t.Fatalf("expected 1 verdict, got %d", len(result.Verdicts))
+	}
+	v := result.Verdicts[0]
+	if v.Target != "dev:0.1" {
+		t.Fatalf("expected target dev:0.1, got %s", v.Target)
+	}
+	if !v.Blocked {
+		t.Fatalf("expected blocked verdict from waiting_input state")
+	}
+	if v.EvalSource != model.EvalSourceEvent {
+		t.Fatalf("expected eval source event, got %s", v.EvalSource)
+	}
+}
+
+func TestScanner_EventOnlyModeAppliesExcludeSessions(t *testing.T) {
+	store := events.NewStore(5 * time.Minute)
+	now := time.Now().UTC()
+	store.Upsert(events.Event{Assistant: "claude", State: events.StateWaitingInput, Target: "private:0.1", TS: now})
+	scanner := &Scanner{EventStore: store, EventOnly: true, ExcludeSessions: []string{"private"}}
+
+	result, err := scanner.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+	if len(result.Verdicts) != 0 {
+		t.Fatalf("expected 0 verdicts after exclusion, got %d", len(result.Verdicts))
 	}
 }
 

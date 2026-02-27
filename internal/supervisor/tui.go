@@ -195,6 +195,9 @@ func (m *tuiModel) rebuildGroups() {
 			if v.Agent == "not_an_agent" {
 				continue
 			}
+			if v.EvalSource == model.EvalSourceEvent && !v.Blocked {
+				continue
+			}
 		case filterAll:
 			// show everything
 		}

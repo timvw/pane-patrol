@@ -11,6 +11,7 @@ const (
 	EvalSourceParser = "parser"
 	EvalSourceCache  = "cache"
 	EvalSourceError  = "error"
+	EvalSourceEvent  = "event"
 )
 
 // Pane represents a terminal multiplexer pane.

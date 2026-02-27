@@ -1,0 +1,12 @@
+services:
+  pane-patrol-int:
+    build:
+      context: ../..
+      dockerfile: test/integration/Dockerfile
+    working_dir: /workspace
+    volumes:
+      - ../..:/workspace
+    environment:
+      - HOME=/tmp/pane-patrol-home
+      - XDG_RUNTIME_DIR=/tmp/pane-patrol-runtime
+    command: ["bash", "test/integration/e2e_hooks_test.sh"]

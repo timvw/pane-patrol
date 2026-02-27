@@ -82,6 +82,27 @@ The tool supports multiple terminal multiplexers (tmux, zellij). Swapping
 the multiplexer should not change the evaluation logic or output format.
 The `Multiplexer` interface enforces this separation.
 
+## Hook-first dashboard mode
+
+Supervisor can run in hook-first mode where assistant hook events are the
+source of truth for blocked/waiting states.
+
+- Events are delivered over local Unix datagram socket.
+- State is normalized to deterministic enums (`waiting_input`, `waiting_approval`, etc.).
+- Dashboard keeps latest state per tmux target and uses existing target-based jump.
+- No pane-content fallback parsing in hook-first mode.
+
+### Trust boundary
+
+v1 uses same-UID trust:
+
+- socket directory `0700`
+- socket file `0600`
+- local-only Unix socket (no network listener)
+
+Any process running as same user can emit events; this is documented and
+accepted for v1 simplicity.
+
 ## Nudge modes
 
 Actions include a `raw` flag that controls how keystrokes are sent:
