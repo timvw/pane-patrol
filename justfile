@@ -45,3 +45,7 @@ build-all:
 # Run linter
 lint:
     golangci-lint run
+
+# Install hook adapters for supported assistants
+install-hooks:
+	./scripts/install-hooks.sh

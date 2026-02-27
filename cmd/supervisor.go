@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/timvw/pane-patrol/internal/config"
+	"github.com/timvw/pane-patrol/internal/events"
 	telem "github.com/timvw/pane-patrol/internal/otel"
 	"github.com/timvw/pane-patrol/internal/parser"
 	"github.com/timvw/pane-patrol/internal/supervisor"
@@ -18,6 +19,8 @@ import (
 
 var flagNoEmbed bool
 var flagTheme string
+var flagHookFirst bool
+var flagEventSocket string
 
 var supervisorCmd = &cobra.Command{
 	Use:   "supervisor",
@@ -43,6 +46,10 @@ func init() {
 		"Do not auto-embed in a tmux session (navigation will not work outside tmux)")
 	supervisorCmd.Flags().StringVar(&flagTheme, "theme", "dark",
 		"Color theme: dark, light")
+	supervisorCmd.Flags().BoolVar(&flagHookFirst, "hook-first", false,
+		"Use hook events as the source of assistant state")
+	supervisorCmd.Flags().StringVar(&flagEventSocket, "event-socket", "",
+		"Unix datagram socket path for hook events")
 	rootCmd.AddCommand(supervisorCmd)
 }
 
@@ -119,6 +126,23 @@ func runSupervisor(cmd *cobra.Command) error {
 		SessionID:       sessionID,
 		SelfTarget:      selfTarget,
 		Cache:           supervisor.NewVerdictCache(cfg.CacheTTLDuration),
+	}
+
+	if flagHookFirst {
+		socketPath := flagEventSocket
+		if socketPath == "" {
+			socketPath = events.DefaultSocketPath()
+		}
+		eventStore := events.NewStore(3 * time.Minute)
+		collector := events.NewCollector(eventStore, socketPath)
+		if err := collector.Start(ctx); err != nil {
+			return fmt.Errorf("hook collector: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "hook collector: listening on %s\n", collector.SocketPath())
+
+		scanner.EventStore = eventStore
+		scanner.EventOnly = true
+		scanner.Cache = nil
 	}
 
 	tui := &supervisor.TUI{

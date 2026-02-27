@@ -156,6 +156,57 @@ pane-patrol supervisor --no-embed
 | `r` | Force rescan |
 | `q` | Quit |
 
+### Hook-first mode (experimental)
+
+You can run the supervisor in hook-first mode so assistant hooks become the
+source of truth for blocked/waiting state.
+
+```bash
+pane-patrol supervisor --hook-first
+```
+
+Optional: override event socket path:
+
+```bash
+pane-patrol supervisor --hook-first --event-socket /tmp/pane-patrol-1000/events.sock
+```
+
+In hook-first mode, the dashboard only shows attention states emitted by hooks
+(`waiting_input`, `waiting_approval`) and still uses `tmux switch-client` to
+jump to the pane target from events.
+
+### Install assistant hooks
+
+Install built-in hook adapters for Claude, OpenCode, and Codex:
+
+```bash
+just install-hooks
+```
+
+This copies scripts to:
+
+- `~/.claude/hooks/pane-patrol-emit.sh`
+- `~/.config/opencode/hooks/pane-patrol-emit.sh`
+- `~/.config/codex/hooks/pane-patrol-emit.sh`
+
+### Hook security model
+
+Hook events use a local Unix datagram socket and same-UID trust model.
+
+- Socket dir permissions: `0700`
+- Socket permissions: `0600`
+- No TCP listener
+
+Any process under the same user can emit events in v1 (documented trade-off).
+
+### Fire-and-forget behavior
+
+Hook adapters are designed to never block assistant UX.
+
+- One best-effort datagram send
+- No retries
+- Exit success when listener is unavailable
+
 ### Display filter
 
 Press `f` to cycle through three views:
@@ -305,6 +356,15 @@ variables. Each scan creates a trace with per-pane spans including:
 
 See [docs/design-principles.md](docs/design-principles.md) for the full design
 philosophy, including ZFC compliance, composability, and feedback loop design.
+
+## Isolated integration testing
+
+Run hook-first integration tests in a containerized harness (private HOME,
+private runtime dir, private tmux server):
+
+```bash
+bash test/integration/run.sh
+```
 
 ## License
 

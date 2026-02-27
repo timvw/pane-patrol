@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/timvw/pane-patrol/internal/events"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -26,6 +29,8 @@ var tracer = otel.Tracer("pane-supervisor")
 type Scanner struct {
 	Mux             mux.Multiplexer
 	Parsers         *parser.Registry // Deterministic parsers for known agents; nil disables
+	EventStore      *events.Store
+	EventOnly       bool
 	Filter          string
 	ExcludeSessions []string // Session names to exclude from scanning (exact match)
 	Parallel        int
@@ -45,6 +50,10 @@ type ScanResult struct {
 // Scan captures and evaluates all panes, returning verdicts.
 // This is the same logic as pane-patrol scan, but as a Go function call.
 func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
+	if s.EventOnly {
+		return s.scanFromEvents(), nil
+	}
+
 	ctx, span := tracer.Start(ctx, "scan",
 		trace.WithAttributes(
 			attribute.String("filter", s.Filter),
@@ -139,6 +148,99 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 	)
 
 	return result, nil
+}
+
+func (s *Scanner) scanFromEvents() *ScanResult {
+	if s.EventStore == nil {
+		return &ScanResult{}
+	}
+	now := time.Now().UTC()
+	eventsSnapshot := s.EventStore.SnapshotAttention(now)
+	if len(eventsSnapshot) == 0 {
+		return &ScanResult{}
+	}
+
+	verdicts := make([]model.Verdict, 0, len(eventsSnapshot))
+	for _, ev := range eventsSnapshot {
+		pane, err := parseEventTarget(ev.Target)
+		if err != nil {
+			continue
+		}
+		if len(s.ExcludeSessions) > 0 && config.MatchesExcludeList(pane.Session, s.ExcludeSessions) {
+			continue
+		}
+		if s.Filter != "" {
+			re, err := regexp.Compile(s.Filter)
+			if err != nil || !re.MatchString(pane.Session) {
+				continue
+			}
+		}
+		pane.Command = ev.Assistant
+
+		v := model.BaseVerdict(pane, now)
+		v.Agent = ev.Assistant
+		v.Blocked = events.IsAttentionState(ev.State)
+		v.Reason = eventReason(ev.State, ev.Message)
+		v.WaitingFor = ev.Message
+		v.EvalSource = model.EvalSourceEvent
+		verdicts = append(verdicts, v)
+	}
+
+	sort.SliceStable(verdicts, func(i, j int) bool {
+		if verdicts[i].Session == verdicts[j].Session {
+			if verdicts[i].Window == verdicts[j].Window {
+				return verdicts[i].Pane < verdicts[j].Pane
+			}
+			return verdicts[i].Window < verdicts[j].Window
+		}
+		return verdicts[i].Session < verdicts[j].Session
+	})
+
+	return &ScanResult{Verdicts: verdicts}
+}
+
+func parseEventTarget(target string) (model.Pane, error) {
+	colon := -1
+	for i := len(target) - 1; i >= 0; i-- {
+		if target[i] == ':' {
+			colon = i
+			break
+		}
+	}
+	if colon < 1 || colon == len(target)-1 {
+		return model.Pane{}, fmt.Errorf("invalid target")
+	}
+	dot := -1
+	rest := target[colon+1:]
+	for i := len(rest) - 1; i >= 0; i-- {
+		if rest[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot < 1 || dot == len(rest)-1 {
+		return model.Pane{}, fmt.Errorf("invalid target")
+	}
+	window := 0
+	pane := 0
+	if _, err := fmt.Sscanf(rest, "%d.%d", &window, &pane); err != nil {
+		return model.Pane{}, fmt.Errorf("invalid target")
+	}
+	return model.Pane{Target: target, Session: target[:colon], Window: window, Pane: pane}, nil
+}
+
+func eventReason(state, message string) string {
+	if message != "" {
+		return message
+	}
+	switch state {
+	case events.StateWaitingInput:
+		return "waiting for input"
+	case events.StateWaitingApproval:
+		return "waiting for approval"
+	default:
+		return "event state"
+	}
 }
 
 func (s *Scanner) evaluatePane(ctx context.Context, pane model.Pane) (*model.Verdict, error) {
