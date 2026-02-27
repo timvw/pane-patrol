@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -151,39 +150,61 @@ func (s *Scanner) Scan(ctx context.Context) (*ScanResult, error) {
 }
 
 func (s *Scanner) scanFromEvents() *ScanResult {
-	if s.EventStore == nil {
+	if s.EventStore == nil || s.Mux == nil {
 		return &ScanResult{}
 	}
+	panes, err := s.Mux.ListPanes(context.Background(), s.Filter)
+	if err != nil {
+		return &ScanResult{}
+	}
+
+	filtered := make([]model.Pane, 0, len(panes))
+	for _, p := range panes {
+		if s.SelfTarget != "" && p.Target == s.SelfTarget {
+			continue
+		}
+		if len(s.ExcludeSessions) > 0 && config.MatchesExcludeList(p.Session, s.ExcludeSessions) {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	panes = filtered
+	if len(panes) == 0 {
+		return &ScanResult{}
+	}
+
 	now := time.Now().UTC()
 	eventsSnapshot := s.EventStore.Snapshot(now)
-	if len(eventsSnapshot) == 0 {
-		return &ScanResult{}
+	byTarget := make(map[string]events.Event, len(eventsSnapshot))
+	for _, ev := range eventsSnapshot {
+		byTarget[ev.Target] = ev
 	}
 
-	verdicts := make([]model.Verdict, 0, len(eventsSnapshot))
-	for _, ev := range eventsSnapshot {
-		pane, err := parseEventTarget(ev.Target)
-		if err != nil {
+	verdicts := make([]model.Verdict, 0, len(panes))
+	for _, p := range panes {
+		if ev, ok := byTarget[p.Target]; ok {
+			pane := p
+			pane.Command = ev.Assistant
+			v := model.BaseVerdict(pane, now)
+			v.Agent = ev.Assistant
+			v.Blocked = events.IsAttentionState(ev.State)
+			v.Reason = eventReason(ev.State, ev.Message)
+			v.WaitingFor = ev.Message
+			v.EvalSource = model.EvalSourceEvent
+			verdicts = append(verdicts, v)
 			continue
 		}
-		if len(s.ExcludeSessions) > 0 && config.MatchesExcludeList(pane.Session, s.ExcludeSessions) {
-			continue
-		}
-		if s.Filter != "" {
-			re, err := regexp.Compile(s.Filter)
-			if err != nil || !re.MatchString(pane.Session) {
-				continue
-			}
-		}
-		pane.Command = ev.Assistant
 
-		v := model.BaseVerdict(pane, now)
-		v.Agent = ev.Assistant
-		v.Blocked = events.IsAttentionState(ev.State)
-		v.Reason = eventReason(ev.State, ev.Message)
-		v.WaitingFor = ev.Message
-		v.EvalSource = model.EvalSourceEvent
-		verdicts = append(verdicts, v)
+		v, err := s.evaluatePane(context.Background(), p)
+		if err != nil {
+			vv := model.BaseVerdict(p, now)
+			vv.Agent = "error"
+			vv.Reason = fmt.Sprintf("evaluation failed: %v", err)
+			vv.EvalSource = model.EvalSourceError
+			verdicts = append(verdicts, vv)
+			continue
+		}
+		verdicts = append(verdicts, *v)
 	}
 
 	sort.SliceStable(verdicts, func(i, j int) bool {
@@ -197,36 +218,6 @@ func (s *Scanner) scanFromEvents() *ScanResult {
 	})
 
 	return &ScanResult{Verdicts: verdicts}
-}
-
-func parseEventTarget(target string) (model.Pane, error) {
-	colon := -1
-	for i := len(target) - 1; i >= 0; i-- {
-		if target[i] == ':' {
-			colon = i
-			break
-		}
-	}
-	if colon < 1 || colon == len(target)-1 {
-		return model.Pane{}, fmt.Errorf("invalid target")
-	}
-	dot := -1
-	rest := target[colon+1:]
-	for i := len(rest) - 1; i >= 0; i-- {
-		if rest[i] == '.' {
-			dot = i
-			break
-		}
-	}
-	if dot < 1 || dot == len(rest)-1 {
-		return model.Pane{}, fmt.Errorf("invalid target")
-	}
-	window := 0
-	pane := 0
-	if _, err := fmt.Sscanf(rest, "%d.%d", &window, &pane); err != nil {
-		return model.Pane{}, fmt.Errorf("invalid target")
-	}
-	return model.Pane{Target: target, Session: target[:colon], Window: window, Pane: pane}, nil
 }
 
 func eventReason(state, message string) string {

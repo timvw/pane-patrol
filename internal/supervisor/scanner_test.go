@@ -250,9 +250,20 @@ func TestScanner_EventOnlyModeUsesStore(t *testing.T) {
 	store := events.NewStore(5 * time.Minute)
 	now := time.Now().UTC()
 	store.Upsert(events.Event{Assistant: "claude", State: events.StateWaitingInput, Target: "dev:0.1", TS: now})
-	store.Upsert(events.Event{Assistant: "claude", State: events.StateRunning, Target: "dev:0.2", TS: now})
 
-	scanner := &Scanner{EventStore: store, EventOnly: true}
+	openCodeContent := "\n\n\n\n\n\n\n\n\n\n> "
+	mux := &mockMultiplexer{
+		panes: []model.Pane{
+			{Target: "dev:0.0", Session: "dev", PID: 1, Command: "bash", ProcessTree: []string{"opencode"}},
+			{Target: "dev:0.1", Session: "dev", PID: 2, Command: "bash", ProcessTree: []string{"claude"}},
+		},
+		captures: map[string]string{
+			"dev:0.0": openCodeContent,
+			"dev:0.1": "ignored due to event",
+		},
+	}
+
+	scanner := &Scanner{Mux: mux, Parsers: parser.NewRegistry(), EventStore: store, EventOnly: true, Parallel: 1}
 	result, err := scanner.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan() error: %v", err)
@@ -264,14 +275,14 @@ func TestScanner_EventOnlyModeUsesStore(t *testing.T) {
 	for _, v := range result.Verdicts {
 		seen[v.Target] = v
 	}
-	if !seen["dev:0.1"].Blocked {
+	if !seen["dev:0.1"].Blocked || seen["dev:0.1"].EvalSource != model.EvalSourceEvent {
 		t.Fatalf("expected blocked verdict from waiting_input state")
 	}
-	if seen["dev:0.2"].Blocked {
-		t.Fatalf("expected running event to be non-blocked")
+	if seen["dev:0.0"].EvalSource != model.EvalSourceParser {
+		t.Fatalf("expected parser fallback verdict for pane without hook event")
 	}
-	if seen["dev:0.2"].EvalSource != model.EvalSourceEvent {
-		t.Fatalf("expected eval source event, got %s", seen["dev:0.2"].EvalSource)
+	if seen["dev:0.0"].Agent == "not_an_agent" {
+		t.Fatalf("expected known assistant verdict from parser fallback")
 	}
 }
 
