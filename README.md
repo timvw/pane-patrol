@@ -135,17 +135,13 @@ pane-patrol supervisor --no-embed
 
 ### Hook-first mode
 
-You can run the supervisor in hook-first mode so assistant hooks become the
-source of truth for blocked/waiting state.
-
-```bash
-pane-patrol supervisor --hook-first
-```
+Supervisor uses hook-first mode by default so assistant hooks are the source of
+truth for blocked/waiting state.
 
 Optional: override event socket path:
 
 ```bash
-pane-patrol supervisor --hook-first --event-socket /tmp/pane-patrol-1000/events.sock
+pane-patrol supervisor --event-socket /tmp/pane-patrol-1000/events.sock
 ```
 
 In hook-first mode, the dashboard only shows attention states emitted by hooks

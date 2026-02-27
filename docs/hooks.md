@@ -61,5 +61,5 @@ Supervisor defaults:
 Override with:
 
 ```bash
-pane-patrol supervisor --hook-first --event-socket /custom/path/events.sock
+pane-patrol supervisor --event-socket /custom/path/events.sock
 ```

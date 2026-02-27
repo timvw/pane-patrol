@@ -46,7 +46,7 @@ integration hook smoke passed
 ```bash
 just build
 just install-hooks
-./bin/pane-patrol supervisor --hook-first
+./bin/pane-patrol supervisor
 ```
 
 From a tmux pane, emit a synthetic event:
