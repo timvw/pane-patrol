@@ -1,9 +1,30 @@
 # Design Principles
 
+## Hook-first architecture
+
+pane-patrol supervisor mode is hook-first: assistant hooks emit explicit state
+events, and the dashboard renders those states directly.
+
+### Hook events as primary source of truth
+
+For supported assistants, supervisor state comes from hook events, not from
+inferring status out of pane scrollback.
+
+Benefits:
+- **Deterministic state**: explicit `waiting_input` / `waiting_approval`
+- **Deterministic routing**: event includes tmux target for exact jump
+- **No inference drift**: no fragile pattern guessing in supervisor mode
+
+### Event transport model
+
+- Local Unix datagram socket (same host, same user boundary)
+- Fire-and-forget delivery (no hook blocking when collector is down)
+- In-memory latest-state map keyed by tmux target
+
 ## Deterministic parser architecture
 
-pane-patrol uses deterministic parsers for known agents. Unknown panes are
-classified as "not_an_agent".
+Deterministic parsers still power direct pane-inspection commands and non-hook
+paths. Unknown panes are classified as "not_an_agent".
 
 ### Deterministic parsers for known agents
 
@@ -34,22 +55,19 @@ The parsers live in `internal/parser/` with one implementation per agent:
 
 ## Observable reality as source of truth
 
-State is derived from what is directly observable:
+State is derived from directly observable sources:
 
-- Pane content comes from `tmux capture-pane` (or equivalent) — the actual
-  text on screen.
+- Hook event state comes from assistant runtime hooks.
+- Pane content comes from `tmux capture-pane` for parser-based paths.
 - Process identity comes from `pane_current_command` — what the OS reports.
 - Session/pane topology comes from `list-sessions` / `list-panes` — the
   multiplexer's live state.
 
-No shadow state files, no PID tracking, no caches that can drift from reality.
+No shadow state files and no caches that can drift from reality.
 
-**Note on the verdict cache:** The supervisor uses a content-hash cache
-(SHA256 of pane content) with TTL expiry and active invalidation on
-nudge actions. This is compatible with the observable-reality principle
-because the cache key IS the observed content — if any pixel changes
-(a spinner frame, a new log line), the hash changes and the cache misses.
-The TTL ensures periodic re-evaluation even when content is static.
+**Note on cache scope:** content-hash verdict caching applies to parser-based
+pane scanning. Hook-first supervisor mode uses latest hook event state per
+target instead of capture-pane verdict caching.
 
 ## Composable commands
 
@@ -84,8 +102,8 @@ The `Multiplexer` interface enforces this separation.
 
 ## Hook-first dashboard mode
 
-Supervisor can run in hook-first mode where assistant hook events are the
-source of truth for blocked/waiting states.
+Supervisor uses hook-first mode where assistant hook events are the source of
+truth for blocked/waiting states.
 
 - Events are delivered over local Unix datagram socket.
 - State is normalized to deterministic enums (`waiting_input`, `waiting_approval`, etc.).

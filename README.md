@@ -16,30 +16,18 @@ Codex) — instant, free, no API key needed. Unknown panes are classified as
 
 ## How it works
 
-When running multiple AI coding agents across tmux panes, they frequently
-get **blocked waiting for human input** — confirmation dialogs, permission
-prompts, questions, or just finishing a task and sitting idle at their
-input prompt. With several agents running in parallel, you're constantly
-cycling through tmux windows checking if anything is stuck.
+The supervisor is designed around a **hook-first** flow:
 
-The supervisor solves this with a continuous scan loop (every 5s by default):
+1. Install assistant hooks (`just install-hooks`)
+2. Hooks emit structured events (`assistant`, `state`, `target`, `ts`)
+3. Supervisor ingests events over a local Unix datagram socket
+4. Dashboard shows attention states (`waiting_input`, `waiting_approval`)
+5. `Enter` jumps directly to the pane via `tmux switch-client -t <target>`
 
-1. **List** all tmux panes
-2. **Filter** — skip excluded sessions, skip the supervisor's own pane
-3. **For each pane:**
-   - **Capture** visible terminal content via `tmux capture-pane`
-   - **Collect process metadata** — shell PID and child process tree
-     (via `pgrep -P` and `ps`), prepended as a `[Process Info]` header
-   - **Check cache** — SHA256 hash of content; if unchanged since last
-     scan and within TTL (2m default), reuse the previous verdict
-   - **Deterministic parser** — known agents (OpenCode, Claude Code,
-      Codex) are identified by process tree and TUI markers, then evaluated
-      by exact pattern matching derived from each agent's source code;
-      unrecognized panes are classified as "not_an_agent"
-4. **Display** results in the interactive TUI
-5. **Wait** for next refresh tick or user action
+This avoids brittle "infer state from scrollback" behavior for supported
+assistants and gives deterministic navigation to the pane that needs input.
 
-### Deterministic parsers
+### Deterministic parsers (non-hook paths)
 
 Deterministic parsers (`internal/parser/`) handle known agents by matching
 exact TUI patterns derived from each agent's source code. This is protocol
@@ -47,22 +35,9 @@ parsing, not heuristic classification. Parsers produce verdicts with specific
 unblocking actions (e.g., numeric key `1` for Claude Code permission dialogs,
 `Enter` for Codex approvals). Unknown panes are classified as "not_an_agent".
 
-### Why the cache works
-
-The cache is content-hash based — it only hits when the pane content is
-byte-for-byte identical to the previous scan. This naturally handles the
-active vs. blocked distinction:
-
-- **Active agents** have animated spinners (braille characters cycling at
-  80ms, Knight Rider blocks at 40ms) that change the captured content
-  between scans → cache miss → fresh evaluation
-- **Blocked agents** show a static prompt that doesn't change → cache
-  hit → reuse previous verdict
-- **Non-agent panes** (idle shells, logs) are also static → cache hit
-
-This means frequent scanning is cheap: blocked panes (the ones you
-actually care about detecting) are cached, while active panes get fresh
-evaluations that quickly confirm "not blocked."
+Deterministic parsers (`internal/parser/`) remain useful for direct pane
+inspection commands (`check`, `scan`) and non-hook workflows. They match exact
+TUI patterns derived from agent source code and are not heuristic classifiers.
 
 ## Installation
 
@@ -156,7 +131,7 @@ pane-patrol supervisor --no-embed
 | `r` | Force rescan |
 | `q` | Quit |
 
-### Hook-first mode (experimental)
+### Hook-first mode
 
 You can run the supervisor in hook-first mode so assistant hooks become the
 source of truth for blocked/waiting state.
