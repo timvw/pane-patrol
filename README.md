@@ -4,13 +4,15 @@ Terminal pane monitor for AI coding agents — detects blocked states and sugges
 
 ## What it does
 
-pane-patrol monitors terminal multiplexer panes (tmux) and determines if AI
-coding agents are blocked waiting for human input — confirmation dialogs,
-permission prompts, questions, or idle at their input prompt.
+pane-patrol gives you a dashboard of AI coding assistants running in tmux and
+highlights which ones are waiting for your input (approval, confirmation, or
+response).
 
-It uses **deterministic parsers** for known agents (OpenCode, Claude Code,
-Codex) — instant, free, no API key needed. Unknown panes are classified as
-"not_an_agent".
+In supervisor mode, pane-patrol is **hook-first**: assistants emit structured
+state events and pane-patrol uses those events for status and jump-to-pane
+navigation. Deterministic parsers for known agents (OpenCode, Claude Code,
+Codex) remain available for direct pane inspection workflows (`check`, `scan`),
+with unknown panes classified as `not_an_agent`.
 
 ![Supervisor TUI — filter cycling, navigation, and jump-to-pane](docs/images/demo-supervisor.gif)
 
