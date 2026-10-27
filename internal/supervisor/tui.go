@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/timvw/pane-patrol/internal/model"
 )
 
@@ -146,7 +146,7 @@ func (t *TUI) Run(ctx context.Context) error {
 		autoNudge:        t.AutoNudge,
 		autoNudgeMaxRisk: maxRisk,
 	}
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m)
 	_, err := p.Run()
 	return err
 }
@@ -340,7 +340,7 @@ func (m *tuiModel) clampCursorToPane() {
 
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
@@ -394,26 +394,28 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.handleVerdictListKey(msg)
 }
 
 func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
+
 	// Hover: move cursor to hovered item.
-	if msg.Action == tea.MouseActionMotion {
-		idx := msg.Y - 1 + m.listStart
+	if _, ok := msg.(tea.MouseMotionMsg); ok {
+		idx := mouse.Y - 1 + m.listStart
 		if idx >= 0 && idx < len(m.items) {
 			m.cursor = idx
 		}
 		return m, nil
 	}
 
-	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+	if _, ok := msg.(tea.MouseClickMsg); !ok || mouse.Button != tea.MouseLeft {
 		return m, nil
 	}
 
 	// Click in the list panel: header line is row 0, items start at row 1
-	clickedIdx := msg.Y - 1 + m.listStart // offset for header line + scroll
+	clickedIdx := mouse.Y - 1 + m.listStart // offset for header line + scroll
 	if clickedIdx < 0 || clickedIdx >= len(m.items) {
 		return m, nil
 	}
@@ -441,7 +443,7 @@ func (m *tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *tuiModel) handleVerdictListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -564,12 +566,16 @@ func (m *tuiModel) handleVerdictListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *tuiModel) View() string {
-	if m.width == 0 {
-		return "Loading..."
+func (m *tuiModel) View() tea.View {
+	content := "Loading..."
+	if m.width != 0 {
+		content = m.viewVerdictList()
 	}
 
-	return m.viewVerdictList()
+	v := tea.NewView(content)
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 func (m *tuiModel) viewVerdictList() string {
