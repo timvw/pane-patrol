@@ -3,7 +3,7 @@ package supervisor
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/timvw/pane-patrol/internal/model"
 )
 
@@ -47,7 +47,7 @@ func simpleVerdict() model.Verdict {
 
 func TestListKey_EnterOnPane_JumpsToTmuxPane(t *testing.T) {
 	m := newTestModel(simpleVerdict())
-	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	msg := tea.KeyPressMsg{Code: tea.KeyEnter}
 	_, _ = m.handleVerdictListKey(msg)
 
 	// Enter jumps to the tmux pane (switch-client).
@@ -61,7 +61,7 @@ func TestListKey_EnterOnSession_TogglesExpand(t *testing.T) {
 	m.cursor = 0
 	wasExpanded := m.expanded[m.items[0].session]
 
-	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	msg := tea.KeyPressMsg{Code: tea.KeyEnter}
 	_, _ = m.handleVerdictListKey(msg)
 
 	if m.expanded[m.items[0].session] == wasExpanded {
@@ -76,7 +76,7 @@ func TestListKey_RightOnSession_Expands(t *testing.T) {
 	m.rebuildItems()
 	m.cursor = 0 // session header
 
-	msg := tea.KeyMsg{Type: tea.KeyRight}
+	msg := tea.KeyPressMsg{Code: tea.KeyRight}
 	_, _ = m.handleVerdictListKey(msg)
 
 	if !m.expanded["test"] {
@@ -95,7 +95,7 @@ func TestListKey_LeftOnPane_JumpsToSessionHeader(t *testing.T) {
 		t.Fatal("setup: expected cursor on pane item")
 	}
 
-	msg := tea.KeyMsg{Type: tea.KeyLeft}
+	msg := tea.KeyPressMsg{Code: tea.KeyLeft}
 	_, _ = m.handleVerdictListKey(msg)
 
 	if m.items[m.cursor].kind != itemSession {
@@ -107,7 +107,7 @@ func TestListKey_LeftOnSession_Collapses(t *testing.T) {
 	m := newTestModel(simpleVerdict())
 	m.cursor = 0 // session header (already expanded)
 
-	msg := tea.KeyMsg{Type: tea.KeyLeft}
+	msg := tea.KeyPressMsg{Code: tea.KeyLeft}
 	_, _ = m.handleVerdictListKey(msg)
 
 	if m.expanded["test"] {
@@ -135,7 +135,7 @@ func TestListKey_UpDownNavigation(t *testing.T) {
 	m.cursor = 1
 
 	// Down should skip session-b header and land on pane-b
-	msg := tea.KeyMsg{Type: tea.KeyDown}
+	msg := tea.KeyPressMsg{Code: tea.KeyDown}
 	_, _ = m.handleVerdictListKey(msg)
 
 	if m.cursor < 2 {
@@ -153,7 +153,7 @@ func TestListKey_FilterCycles(t *testing.T) {
 		t.Fatalf("expected initial filter=blocked, got %v", m.filter)
 	}
 
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}}
+	msg := tea.KeyPressMsg{Code: 'f', Text: "f"}
 	_, _ = m.handleVerdictListKey(msg)
 	if m.filter != filterAgents {
 		t.Errorf("expected filter=agents after first f, got %v", m.filter)
@@ -172,7 +172,7 @@ func TestListKey_FilterCycles(t *testing.T) {
 
 func TestListKey_RescanTriggered(t *testing.T) {
 	m := newTestModel(simpleVerdict())
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	msg := tea.KeyPressMsg{Code: 'r', Text: "r"}
 	_, _ = m.handleVerdictListKey(msg)
 
 	if !m.scanning {
@@ -184,7 +184,7 @@ func TestListKey_ToggleAutoNudge(t *testing.T) {
 	m := newTestModel(simpleVerdict())
 	m.autoNudge = false
 
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}
+	msg := tea.KeyPressMsg{Code: 'a', Text: "a"}
 	_, _ = m.handleVerdictListKey(msg)
 
 	if !m.autoNudge {
@@ -204,7 +204,7 @@ func TestMouse_ClickOnPaneJumps(t *testing.T) {
 	m.listStart = 0
 	// Pane is at item index 1, rendered at Y=2 (header=0, session=1, pane=2... no, Y=1+index)
 	// With header at Y=0 and items starting at Y=1: session at Y=1, pane at Y=2
-	msg := tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	msg := tea.MouseClickMsg{X: 5, Y: 2, Button: tea.MouseLeft}
 	_, _ = m.handleMouse(msg)
 
 	if m.cursor != 1 {
@@ -230,7 +230,7 @@ func TestMouse_HoverMovesCursor(t *testing.T) {
 	m.cursor = 0
 
 	// Hover over pane-b (items: [sess-a=0, pane-a=1, sess-b=2, pane-b=3], Y = 1+index)
-	msg := tea.MouseMsg{X: 5, Y: 4, Action: tea.MouseActionMotion}
+	msg := tea.MouseMotionMsg{X: 5, Y: 4}
 	_, _ = m.handleMouse(msg)
 
 	if m.cursor != 3 {
@@ -421,5 +421,27 @@ func TestAutoExpand_AllFilterExpandsSessions(t *testing.T) {
 
 	if !m.expanded["alpha"] || !m.expanded["beta"] {
 		t.Fatalf("expected all sessions expanded in all filter")
+	}
+}
+
+// --- View ---
+
+func TestView_EnablesAltScreenAndMouse(t *testing.T) {
+	m := newTestModel(simpleVerdict())
+
+	v := m.View()
+	if !v.AltScreen {
+		t.Error("expected AltScreen to be enabled")
+	}
+	if v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("expected MouseModeCellMotion, got %v", v.MouseMode)
+	}
+	if v.Content == "" || v.Content == "Loading..." {
+		t.Errorf("expected rendered verdict list, got %q", v.Content)
+	}
+
+	m.width = 0
+	if got := m.View().Content; got != "Loading..." {
+		t.Errorf("expected Loading... before first resize, got %q", got)
 	}
 }

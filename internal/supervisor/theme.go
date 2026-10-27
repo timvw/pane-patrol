@@ -1,25 +1,29 @@
 package supervisor
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"image/color"
+
+	"charm.land/lipgloss/v2"
+)
 
 // Theme defines all colors used by the supervisor TUI.
 // Use DarkTheme() or LightTheme() to get a pre-built theme,
 // or construct a custom Theme.
 type Theme struct {
-	Primary         lipgloss.Color // warm accent — cursor, title
-	Secondary       lipgloss.Color // cool accent — active/selected option text
-	Accent          lipgloss.Color // dialog borders, active tab bg
-	Error           lipgloss.Color // errors, unanswered, reject
-	Warning         lipgloss.Color // permission dialogs, blocked
-	Success         lipgloss.Color // checkmarks, active status, low risk
-	Info            lipgloss.Color // informational — tool names
-	Text            lipgloss.Color // primary text
-	TextMuted       lipgloss.Color // secondary text — descriptions, hints
-	BackgroundPanel lipgloss.Color // dialog panel background
-	BackgroundElem  lipgloss.Color // highlighted option background
-	Border          lipgloss.Color // separators, borders
+	Primary         color.Color // warm accent — cursor, title
+	Secondary       color.Color // cool accent — active/selected option text
+	Accent          color.Color // dialog borders, active tab bg
+	Error           color.Color // errors, unanswered, reject
+	Warning         color.Color // permission dialogs, blocked
+	Success         color.Color // checkmarks, active status, low risk
+	Info            color.Color // informational — tool names
+	Text            color.Color // primary text
+	TextMuted       color.Color // secondary text — descriptions, hints
+	BackgroundPanel color.Color // dialog panel background
+	BackgroundElem  color.Color // highlighted option background
+	Border          color.Color // separators, borders
 	// Computed: tint(TextMuted, Secondary, 0.6) for active option numbers.
-	ActiveNumber lipgloss.Color
+	ActiveNumber color.Color
 }
 
 // DarkTheme returns the default dark theme matching OpenCode's color scheme.
