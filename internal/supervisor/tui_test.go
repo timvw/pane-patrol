@@ -423,3 +423,25 @@ func TestAutoExpand_AllFilterExpandsSessions(t *testing.T) {
 		t.Fatalf("expected all sessions expanded in all filter")
 	}
 }
+
+// --- View ---
+
+func TestView_EnablesAltScreenAndMouse(t *testing.T) {
+	m := newTestModel(simpleVerdict())
+
+	v := m.View()
+	if !v.AltScreen {
+		t.Error("expected AltScreen to be enabled")
+	}
+	if v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("expected MouseModeCellMotion, got %v", v.MouseMode)
+	}
+	if v.Content == "" || v.Content == "Loading..." {
+		t.Errorf("expected rendered verdict list, got %q", v.Content)
+	}
+
+	m.width = 0
+	if got := m.View().Content; got != "Loading..." {
+		t.Errorf("expected Loading... before first resize, got %q", got)
+	}
+}
